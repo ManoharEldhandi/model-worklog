@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -52,6 +52,21 @@ async function waitForTerminalSession(supervisor: RunningSupervisor, sessionId: 
 		await new Promise<void>((resolve) => setTimeout(resolve, 10));
 	}
 	throw new Error(`session ${sessionId} did not become terminal`);
+}
+
+async function waitForFile(path: string): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		try {
+			await readFile(path, 'utf8');
+			return;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				throw error;
+			}
+		}
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error(`process did not create ${path}`);
 }
 
 async function git(workspacePath: string, args: readonly string[]): Promise<void> {
@@ -131,7 +146,7 @@ test('requires authentication and explicit trust before a managed command can ru
 	assert.deepEqual((await beforeRun.json() as { sessions: unknown[] }).sessions, []);
 });
 
-test('captures a trusted process as redacted canonical evidence and records the usage gap', async () => {
+	test('captures a trusted process as redacted canonical activity without inventing a token count', async () => {
 	const supervisor = await start();
 	const workspacePath = await temporaryDirectory('model-worklog-workspace-');
 	assert.equal((await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath })).status, 200);
@@ -143,21 +158,20 @@ test('captures a trusted process as redacted canonical evidence and records the 
 		actor: 'managed-demo',
 	});
 	assert.equal(run.status, 202);
-	const payload = await run.json() as { session: { sessionId: string } };
+	const payload = await run.json() as { session: { sessionId: string; title?: string } };
+	assert.match(payload.session.title ?? '', /^Run /);
 	const terminal = await waitForTerminalSession(supervisor, payload.session.sessionId);
 	assert.equal(terminal.state, 'completed');
 	const completedSession = await api(supervisor, `/v1/sessions/${payload.session.sessionId}`);
-	assert.deepEqual((await completedSession.json() as { session: { tokenUsage: unknown } }).session.tokenUsage, { status: 'unknown', reason: 'unsupported-capability' });
+	assert.deepEqual((await completedSession.json() as { session: { tokenUsage: unknown } }).session.tokenUsage, { status: 'unknown', reason: 'not-observed' });
 
 	const eventsResponse = await api(supervisor, `/v1/sessions/${payload.session.sessionId}/events`);
 	const events = (await eventsResponse.json() as { events: { sequence: number; kind: string; evidenceGrade: string; unknownReason?: string; payload: unknown }[] }).events;
-	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8]);
-	assert.deepEqual(events.map((event) => event.kind), ['session.started', 'process.started', 'process.output', 'process.output', 'workspace.diff', 'process.completed', 'usage.unavailable', 'session.completed']);
+	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7]);
+	assert.deepEqual(events.map((event) => event.kind), ['session.started', 'process.started', 'process.output', 'process.output', 'workspace.diff', 'process.completed', 'session.completed']);
 	assert.equal(events.some((event) => JSON.stringify(event.payload).includes('super-secret-value')), false);
 	assert.equal(events.some((event) => JSON.stringify(event.payload).includes('[REDACTED]')), true);
-	const usageGap = events.find((event) => event.kind === 'usage.unavailable');
-	assert.equal(usageGap?.evidenceGrade, 'unknown');
-	assert.equal(usageGap?.unknownReason, 'unsupported-capability');
+	assert.equal(events.some((event) => event.kind === 'usage.unavailable'), false);
 });
 
 test('captures a redacted Git diff around a trusted managed command', async () => {
@@ -188,6 +202,30 @@ test('captures a redacted Git diff around a trusted managed command', async () =
 	assert.ok((diff?.redaction.replacements ?? 0) > 0);
 });
 
+test('cancels a managed child process and preserves its interrupted evidence', async () => {
+	const supervisor = await start();
+	const workspacePath = await temporaryDirectory('model-worklog-cancel-workspace-');
+	const startedPath = join(workspacePath, 'started.txt');
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath });
+
+	const run = await api(supervisor, '/v1/runs', 'POST', {
+		workspacePath,
+		executable: process.execPath,
+		args: ['-e', 'require("node:fs").writeFileSync("started.txt", "started"); setInterval(() => {}, 1_000)'],
+	});
+	assert.equal(run.status, 202);
+	const sessionId = (await run.json() as { session: { sessionId: string } }).session.sessionId;
+	await waitForFile(startedPath);
+
+	const cancelled = await api(supervisor, `/v1/sessions/${sessionId}/cancel`, 'POST', {});
+	assert.equal(cancelled.status, 202);
+	assert.equal((await waitForTerminalSession(supervisor, sessionId)).state, 'interrupted');
+	const events = (await (await api(supervisor, `/v1/sessions/${sessionId}/events`)).json() as { events: { kind: string; payload: Record<string, unknown> }[] }).events;
+	assert.ok(events.some((event) => event.kind === 'adapter.lifecycle' && event.payload.phase === 'interrupt-requested'));
+	assert.equal(events.find((event) => event.kind === 'process.completed')?.payload.cancelled, true);
+	assert.equal(events.at(-1)?.kind, 'session.interrupted');
+});
+
 test('accepts external model-declared events and aggregates reported token totals', async () => {
 	const supervisor = await start();
 	const workspacePath = await temporaryDirectory('model-worklog-workspace-');
@@ -211,6 +249,22 @@ test('accepts external model-declared events and aggregates reported token total
 	assert.equal(result.session.state, 'completed');
 	assert.equal(result.session.tokenUsage.status, 'reported');
 	assert.equal(result.session.tokenUsage.totalTokens, 20);
+});
+
+test('deletes completed logs but refuses to remove a running session', async () => {
+	const supervisor = await start();
+	const workspacePath = await temporaryDirectory('model-worklog-delete-workspace-');
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath });
+	const created = await api(supervisor, '/v1/sessions', 'POST', { workspacePath, actor: 'delete-test', runMode: 'observe' });
+	const sessionId = (await created.json() as { session: { sessionId: string } }).session.sessionId;
+	assert.equal((await api(supervisor, `/v1/sessions/${sessionId}`, 'DELETE')).status, 400);
+
+	await api(supervisor, `/v1/sessions/${sessionId}/complete`, 'POST', {});
+	const deleted = await api(supervisor, `/v1/sessions/${sessionId}`, 'DELETE');
+	assert.equal(deleted.status, 200);
+	assert.deepEqual(await deleted.json(), { schemaVersion: 1, sessionId, deleted: true });
+	assert.equal((await api(supervisor, `/v1/sessions/${sessionId}`)).status, 404);
+	assert.deepEqual((await (await api(supervisor, '/v1/sessions')).json() as { sessions: unknown[] }).sessions, []);
 });
 
 test('returns a versioned deterministic cost report for mapped provider usage', async () => {
@@ -262,7 +316,9 @@ test('starts supervisor-owned Codex logger sessions and cancels active relays', 
 		maxTokens: 100,
 	});
 	assert.equal(firstRun.status, 202);
-	const sessionId = (await firstRun.json() as { session: { sessionId: string } }).session.sessionId;
+	const firstSession = (await firstRun.json() as { session: { sessionId: string; title?: string } }).session;
+	assert.equal(firstSession.title, 'Summarize the verified change.');
+	const sessionId = firstSession.sessionId;
 	const completed = await waitForTerminalSession(supervisor, sessionId);
 	assert.equal(completed.state, 'completed');
 	const events = (await (await api(supervisor, `/v1/sessions/${sessionId}/events`)).json() as { events: { kind: string; evidenceGrade: string; payload: Record<string, unknown> }[] }).events;

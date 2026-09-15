@@ -3,6 +3,10 @@ import type { CommandContext } from '../context';
 import { writeJson, writeJsonLine, writeLine } from '../output';
 import { requestSupervisor, type SessionsResult } from '../supervisorApi';
 
+function title(session: SessionsResult['sessions'][number]): string {
+	return (session.title ?? session.actor).replace(/\s+/g, ' ').trim().slice(0, 48);
+}
+
 export async function sessionsCommand(context: CommandContext): Promise<ExitCode> {
 	const outcome = await requestSupervisor<SessionsResult>(context, '/v1/sessions');
 	if (outcome.kind === 'error') {
@@ -23,9 +27,10 @@ export async function sessionsCommand(context: CommandContext): Promise<ExitCode
 		writeLine(context.stdout, 'No retained sessions.');
 		return ExitCode.Ok;
 	}
-	writeLine(context.stdout, 'SESSION                              STATE        ACTOR                 EVENTS  CREATED');
+	writeLine(context.stdout, 'TITLE                                            STATE        EVENTS  CREATED');
 	for (const session of outcome.data.sessions) {
-		writeLine(context.stdout, `${session.sessionId.padEnd(36)} ${session.state.padEnd(12)} ${session.actor.padEnd(21)} ${String(session.eventCount).padEnd(7)} ${session.createdAt}`);
+		writeLine(context.stdout, `${title(session).padEnd(48)} ${session.state.padEnd(12)} ${String(session.eventCount).padEnd(7)} ${session.createdAt}`);
+		writeLine(context.stdout, `  ${session.sessionId}`);
 	}
 	return ExitCode.Ok;
 }

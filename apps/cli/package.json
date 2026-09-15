@@ -21,7 +21,8 @@
     "model-worklog": "dist/bin.js"
   },
   "scripts": {
-    "build": "tsc -b --clean && tsc -b",
+    "clean": "tsc -b --clean && node -e \"for (const path of ['dist', 'test-dist', 'tsconfig.tsbuildinfo', 'tsconfig.test.tsbuildinfo']) require('node:fs').rmSync(path, { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -b",
     "prepack": "npm run build",
     "test": "npm run build && tsc -p tsconfig.test.json && node --enable-source-maps --test \"test-dist/**/*.test.js\""
   },

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { chmod, readFile, writeFile } from 'node:fs/promises';
 
 import { ExitCode } from '../constants';
 import type { CommandContext } from '../context';
@@ -50,6 +50,9 @@ export async function exportEvidenceBundleCommand(context: CommandContext, sessi
 	}
 	try {
 		await writeFile(outputPath, `${JSON.stringify(outcome.data.bundle, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+		if (process.platform !== 'win32') {
+			await chmod(outputPath, 0o600);
+		}
 	} catch (error) {
 		writeLine(context.stderr, `Could not write evidence bundle: ${error instanceof Error ? error.message : String(error)}`);
 		return ExitCode.Internal;

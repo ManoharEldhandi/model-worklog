@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 
@@ -32,6 +32,7 @@ const DEFAULT_CODEX_DURATION_MS = 30 * 60 * 1_000;
 const MAX_CODEX_DURATION_MS = 4 * 60 * 60 * 1_000;
 const DEFAULT_CODEX_TOKEN_BUDGET = 50_000;
 const MAX_CODEX_TOKEN_BUDGET = 2_000_000;
+const MANAGED_RUN_INTERRUPT_GRACE_MS = 3_000;
 
 export interface ApiRequest {
 	readonly method: string;
@@ -59,6 +60,7 @@ interface CreateSessionBody {
 	readonly workspacePath: string;
 	readonly actor: string;
 	readonly runMode: RunMode;
+	readonly title?: string;
 }
 
 interface RunBody {
@@ -107,6 +109,14 @@ interface GitSnapshot {
 	readonly truncated: boolean;
 }
 
+interface ManagedRunControl {
+	child?: ChildProcess;
+	cancelled: boolean;
+	forceKillTimeout?: ReturnType<typeof setTimeout>;
+	readonly completion: Promise<void>;
+	resolveCompletion(): void;
+}
+
 function errorBody(code: string, message: string): ApiResult {
 	return { statusCode: code === 'not_found' ? 404 : code === 'method_not_allowed' ? 405 : code === 'unauthorized' ? 401 : code === 'workspace_not_trusted' ? 403 : 400, body: { error: { code, message } } };
 }
@@ -127,6 +137,21 @@ function requiredString(body: Record<string, unknown>, key: string): string | un
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
 	const value = body[key];
 	return value === undefined || typeof value === 'string' ? value : undefined;
+}
+
+function optionalTitle(body: Record<string, unknown>, key: string): string | undefined {
+	const value = body[key];
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== 'string' || value.trim() === '') {
+		throw new Error(`${key} must be a non-empty string when provided`);
+	}
+	return value;
+}
+
+function commandTitle(executable: string, args: readonly string[]): string {
+	return `Run ${[executable, ...args].join(' ')}`;
 }
 
 function optionalBoundedInteger(body: Record<string, unknown>, key: string, fallback: number, minimum: number, maximum: number): number {
@@ -290,6 +315,7 @@ export class SupervisorService {
 	) {}
 
 	private readonly codexRelays = new Map<string, CodexRelayControl>();
+	private readonly managedRuns = new Map<string, ManagedRunControl>();
 
 	static async open(options: SupervisorServiceOptions): Promise<SupervisorService> {
 		const storeLock = await acquireExclusiveStoreLock(options.dataDirectory, options.instanceId ?? `sup_${randomUUID()}`);
@@ -310,7 +336,12 @@ export class SupervisorService {
 	}
 
 	async close(): Promise<void> {
-		await Promise.all([...this.codexRelays.values()].map((relay) => relay.shutdown()));
+		const managedRuns = [...this.managedRuns.entries()];
+		await Promise.all([
+			...[...this.codexRelays.values()].map((relay) => relay.shutdown()),
+			...managedRuns.map(([sessionId, control]) => this.interruptManagedRun(sessionId, control, 'supervisor-shutdown')),
+		]);
+		await Promise.all(managedRuns.map(([, control]) => control.completion));
 		await this.storeLock.close();
 	}
 
@@ -350,6 +381,9 @@ export class SupervisorService {
 			const operation = match[2];
 			if (operation === undefined && request.method === 'GET') {
 				return this.getSession(sessionId);
+			}
+			if (operation === undefined && request.method === 'DELETE') {
+				return this.deleteSession(sessionId);
 			}
 			if (operation === 'events') {
 				return request.method === 'GET' ? this.getEvents(sessionId, request.query) : request.method === 'POST' ? this.appendIntegrationEvent(sessionId, request.body) : errorBody('method_not_allowed', 'events supports GET and POST');
@@ -409,8 +443,12 @@ export class SupervisorService {
 		if (!workspace.trusted) {
 			return errorBody('workspace_not_trusted', `workspace ${workspace.label} is not trusted`);
 		}
-		const session = await this.ledger.createSession({ runMode: 'managed', actor: parsed.actor, workspacePath: workspace.workspacePath });
-		void this.execute(session.sessionId, workspace.workspacePath, parsed).catch(() => undefined);
+		const session = await this.ledger.createSession({ runMode: 'managed', actor: parsed.actor, workspacePath: workspace.workspacePath, title: commandTitle(parsed.executable, parsed.args) });
+		const control = this.createManagedRunControl();
+		this.managedRuns.set(session.sessionId, control);
+		void this.execute(session.sessionId, workspace.workspacePath, parsed, control)
+			.catch(() => undefined)
+			.finally(() => control.resolveCompletion());
 		return ok({ schemaVersion: 1, session }, 202);
 	}
 
@@ -420,7 +458,7 @@ export class SupervisorService {
 		if (!workspace.trusted) {
 			return errorBody('workspace_not_trusted', `workspace ${workspace.label} is not trusted`);
 		}
-		const session = await this.ledger.createSession({ runMode: 'managed', actor: 'codex-app-server', workspacePath: workspace.workspacePath });
+		const session = await this.ledger.createSession({ runMode: 'managed', actor: 'codex-app-server', workspacePath: workspace.workspacePath, title: parsed.task });
 		const relay = this.codexRelayFactory(
 			{
 				append: (draft) => this.ledger.append(session.sessionId, draft),
@@ -438,6 +476,18 @@ export class SupervisorService {
 	private async getSession(sessionId: string): Promise<ApiResult> {
 		const session = await this.ledger.getSession(sessionId);
 		return session === undefined ? errorBody('not_found', `unknown session ${sessionId}`) : ok({ schemaVersion: 1, session });
+	}
+
+	private async deleteSession(sessionId: string): Promise<ApiResult> {
+		const session = await this.ledger.getSession(sessionId);
+		if (session === undefined) {
+			return errorBody('not_found', `unknown session ${sessionId}`);
+		}
+		if (session.state === 'running') {
+			throw new Error('only completed logs can be deleted');
+		}
+		await this.ledger.deleteSession(sessionId);
+		return ok({ schemaVersion: 1, sessionId, deleted: true });
 	}
 
 	private async getEvents(sessionId: string, queryParameters?: URLSearchParams): Promise<ApiResult> {
@@ -562,6 +612,11 @@ export class SupervisorService {
 		if (session.state !== 'running') {
 			return ok({ schemaVersion: 1, session });
 		}
+		const managedRun = this.managedRuns.get(sessionId);
+		if (managedRun !== undefined) {
+			await this.interruptManagedRun(sessionId, managedRun, 'user-request');
+			return ok({ schemaVersion: 1, session: (await this.ledger.getSession(sessionId))! }, 202);
+		}
 		const relay = this.codexRelays.get(sessionId);
 		if (relay === undefined) {
 			await this.ledger.append(sessionId, { kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'computed', payload: { phase: 'interrupted-after-relay-recovery', message: 'The supervisor no longer owns a live relay for this session.' } });
@@ -576,9 +631,6 @@ export class SupervisorService {
 		if (session === undefined) {
 			throw new Error(`unknown session ${sessionId}`);
 		}
-		if (session.tokenUsage.status === 'unknown') {
-			await this.ledger.recordUsageUnknown(sessionId, 'unsupported-capability');
-		}
 		return this.ledger.complete(sessionId, state);
 	}
 
@@ -592,9 +644,55 @@ export class SupervisorService {
 		}
 	}
 
-	private async execute(sessionId: string, workspacePath: string, body: RunBody): Promise<void> {
+	private createManagedRunControl(): ManagedRunControl {
+		let resolveCompletion: (() => void) | undefined;
+		const completion = new Promise<void>((resolve) => {
+			resolveCompletion = resolve;
+		});
+		return {
+			cancelled: false,
+			completion,
+			resolveCompletion: (): void => resolveCompletion?.(),
+		};
+	}
+
+	private async interruptManagedRun(sessionId: string, control: ManagedRunControl, reason: 'user-request' | 'supervisor-shutdown'): Promise<void> {
+		if (control.cancelled) {
+			return;
+		}
+		control.cancelled = true;
+		await this.ledger.append(sessionId, {
+			kind: 'adapter.lifecycle',
+			actor: 'supervisor',
+			evidenceGrade: 'computed',
+			payload: { adapter: 'managed-command', phase: 'interrupt-requested', reason },
+		});
+		const child = control.child;
+		if (child === undefined || child.exitCode !== null) {
+			return;
+		}
+		try {
+			if (!child.kill('SIGTERM')) {
+				return;
+			}
+			control.forceKillTimeout = setTimeout(() => {
+				if (child.exitCode === null) {
+					child.kill('SIGKILL');
+				}
+			}, MANAGED_RUN_INTERRUPT_GRACE_MS);
+		} catch {
+			// The close handler records the process result; cancellation intent is already durable.
+		}
+	}
+
+	private async execute(sessionId: string, workspacePath: string, body: RunBody, control: ManagedRunControl): Promise<void> {
 		const correlationId = `cmd_${randomUUID()}`;
 		const baseline = await captureGitSnapshot(workspacePath);
+		if (control.cancelled) {
+			await this.completeWithUsageGap(sessionId, 'interrupted');
+			this.managedRuns.delete(sessionId);
+			return;
+		}
 		await this.ledger.append(sessionId, {
 			kind: 'process.started',
 			actor: 'boundary',
@@ -608,7 +706,13 @@ export class SupervisorService {
 		let stdoutOmitted = 0;
 		let stderrOmitted = 0;
 		try {
+			if (control.cancelled) {
+				await this.recordGitDiff(sessionId, correlationId, baseline, await captureGitSnapshot(workspacePath));
+				await this.completeWithUsageGap(sessionId, 'interrupted');
+				return;
+			}
 			const child = spawn(body.executable, body.args, { cwd: workspacePath, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+			control.child = child;
 			child.stdout.on('data', (data: Buffer) => {
 				const captured = captureOutput(stdout, data);
 				stdout = captured.value;
@@ -632,9 +736,9 @@ export class SupervisorService {
 				actor: 'boundary',
 				evidenceGrade: 'observed-boundary',
 				correlationId,
-				payload: { exitCode: result.code, signal: result.signal, succeeded },
+				payload: { exitCode: result.code, signal: result.signal, succeeded, cancelled: control.cancelled },
 			});
-			await this.completeWithUsageGap(sessionId, succeeded ? 'completed' : 'failed');
+			await this.completeWithUsageGap(sessionId, control.cancelled ? 'interrupted' : succeeded ? 'completed' : 'failed');
 		} catch (error) {
 			await this.recordGitDiff(sessionId, correlationId, baseline, await captureGitSnapshot(workspacePath));
 			await this.ledger.append(sessionId, {
@@ -644,7 +748,13 @@ export class SupervisorService {
 				correlationId,
 				payload: { message: error instanceof Error ? error.message : String(error) },
 			});
-			await this.completeWithUsageGap(sessionId, 'failed');
+			await this.completeWithUsageGap(sessionId, control.cancelled ? 'interrupted' : 'failed');
+		} finally {
+			if (control.forceKillTimeout !== undefined) {
+				clearTimeout(control.forceKillTimeout);
+			}
+			control.child = undefined;
+			this.managedRuns.delete(sessionId);
 		}
 	}
 
@@ -709,10 +819,11 @@ export class SupervisorService {
 		const workspacePath = requiredString(value, 'workspacePath');
 		const actor = requiredString(value, 'actor');
 		const runMode = value.runMode;
+		const title = optionalTitle(value, 'title');
 		if (workspacePath === undefined || actor === undefined || !isRunMode(runMode)) {
 			throw new Error('session requires workspacePath, actor, and a canonical runMode');
 		}
-		return { workspacePath, actor, runMode };
+		return { workspacePath, actor, runMode, ...(title === undefined ? {} : { title }) };
 	}
 
 	private parseRunBody(body: unknown): RunBody {

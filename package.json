@@ -25,6 +25,7 @@
     "supervisor": "node apps/local-supervisor/dist/main.js",
     "cli": "node apps/cli/dist/bin.js",
     "demo:model": "node examples/dummy-model-run.mjs",
+    "demo:live": "node examples/live-agent-demo.mjs",
     "extension:install": "npm --prefix apps/vscode-extension ci",
     "extension:package": "npm --prefix apps/vscode-extension run vsix",
     "extension:test": "npm --prefix apps/vscode-extension test",

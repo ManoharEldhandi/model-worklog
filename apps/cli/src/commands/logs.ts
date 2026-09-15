@@ -2,25 +2,7 @@ import { ExitCode } from '../constants';
 import type { CommandContext } from '../context';
 import { writeJson, writeJsonLine, writeLine } from '../output';
 import { requestSupervisor, type EventsResult, type SessionResult } from '../supervisorApi';
-
-function oneLine(value: unknown): string {
-	return JSON.stringify(value).replace(/[\r\n]+/g, ' ').slice(0, 140);
-}
-
-function subject(event: EventsResult['events'][number]): string {
-	const payload = event.payload as Record<string, unknown>;
-	if (event.kind === 'process.output' && typeof payload.text === 'string') {
-		return payload.text.replace(/[\r\n]+/g, ' ').slice(0, 140);
-	}
-	if (event.kind === 'process.started' && typeof payload.executable === 'string') {
-		const args = Array.isArray(payload.args) ? payload.args.filter((value): value is string => typeof value === 'string') : [];
-		return [payload.executable, ...args].join(' ').slice(0, 140);
-	}
-	if (event.kind === 'agent.summary' && typeof payload.summary === 'string') {
-		return payload.summary.slice(0, 140);
-	}
-	return oneLine(payload);
-}
+import { formatSessionEventText } from 'model-worklog-schema';
 
 export async function logsCommand(context: CommandContext, sessionId: string | undefined): Promise<ExitCode> {
 	if (sessionId === undefined) {
@@ -50,13 +32,13 @@ export async function logsCommand(context: CommandContext, sessionId: string | u
 		return ExitCode.Ok;
 	}
 	const session = sessionOutcome.data.session;
-	writeLine(context.stdout, `Session ${session.sessionId} (${session.state}, ${session.runMode})`);
-	writeLine(context.stdout, 'SEQ  TIME          GRADE              ACTOR        KIND                 SUBJECT');
+	writeLine(context.stdout, `Log: ${session.title ?? session.sessionId} (${session.state}, ${session.runMode})`);
+	if (session.title !== undefined) {
+		writeLine(context.stdout, `Session: ${session.sessionId}`);
+	}
 	for (const event of eventsOutcome.data.events) {
-		const time = event.occurredAt.slice(11, 23);
-		writeLine(context.stdout, `${String(event.sequence).padEnd(4)} ${time.padEnd(13)} ${event.evidenceGrade.padEnd(18)} ${event.actor.padEnd(12)} ${event.kind.padEnd(20)} ${subject(event)}`);
-		if (event.unknownReason !== undefined) {
-			writeLine(context.stdout, `     evidence gap: ${event.unknownReason}`);
+		for (const line of formatSessionEventText(event)) {
+			writeLine(context.stdout, line);
 		}
 	}
 	const tokens = session.tokenUsage.status === 'reported'

@@ -12,30 +12,112 @@ model-worklog workspace trust .
 
 The VS Code extension performs the same startup and workspace registration after **Enable Model Logger**. Use the CLI for scripts, CI, or custom integrations outside VS Code.
 
+## SDK Setup
+
+Install the SDK in the process that runs your AI system:
+
+```sh
+npm install model-worklog-sdk
+```
+
+The SDK does not start a supervisor or trust a workspace on behalf of your application. An operator must first start the local supervisor and trust the workspace that the application reports:
+
+```sh
+npm install -g model-worklog
+model-worklog supervisor start
+model-worklog workspace trust /absolute/path/to/workspace
+```
+
+At runtime, `LocalSupervisorClient.fromLocalEnvironment()` reads the supervisor URL from `MODEL_WORKLOG_SUPERVISOR_URL` and the credential from `MODEL_WORKLOG_TOKEN` or `MODEL_WORKLOG_HOME/auth-token`. The URL must be loopback HTTP. Set `MODEL_WORKLOG_HOME` consistently for the supervisor, CLI, and application when using a non-default local store.
+
+## Rich Text And Canonical JSON
+
+Model Logger preserves one redacted log stream, then offers two views of the
+same activity. Give each integration a `title` when it starts a session; that
+task name appears in log lists and becomes the default JSON download filename.
+
+- **Text log:** VS Code **View Log**, `model-worklog logs <session-id> --format pretty`, and `model-worklog watch <session-id> --format pretty` describe visible requests, plans, reasoning summaries, tools, arguments, results, files, commands, tests, output, token counts, and lifecycle in readable language. In VS Code, View Log opens the selected log in one bottom Model Logger panel without moving editor focus; its sectioned content updates while the session runs and places Tokens Used last.
+- **Structured JSON:** `logs --format json` returns the session plus canonical events. `logs --format jsonl` and `watch --format jsonl` emit one canonical event per line for pipelines. `export <session-id> --output log.json` creates a portable evidence bundle with the session, all events, workspace snapshots, cost report, export-redaction metadata, and a SHA-256 manifest.
+
+All JSON has already passed through supervisor redaction. The text view is a
+human-oriented rendering; the canonical event payload remains available in the
+JSON formats and export bundle.
+
+## Show Logs In Your Application
+
+The same session can drive any local presentation. Use `followEvents()` in the
+Node process that runs the agent to receive every committed, redacted event from
+the beginning of the session through completion. It polls the loopback
+supervisor every 100 ms by default and accepts an `AbortSignal` when a viewer is
+closed.
+
+```ts
+import { LocalSupervisorClient, formatSessionEventText } from 'model-worklog-sdk';
+
+const client = await LocalSupervisorClient.fromLocalEnvironment();
+const session = await client.startSession({
+  workspacePath: process.cwd(),
+  actor: 'my-agent',
+});
+
+// Terminal presentation
+void session.followEvents((event) => {
+  process.stdout.write(`${formatSessionEventText(event).join('\n')}\n`);
+});
+
+// Site or desktop application presentation. Keep this in the trusted backend;
+// send `event` to an authenticated browser connection with your own WebSocket,
+// Server-Sent Events, or framework transport.
+void session.followEvents((event) => {
+  applicationClients.broadcast({ type: 'model-worklog-event', event });
+}, { afterSequence: 0, signal: viewerAbortController.signal });
+```
+
+Do not connect browser code directly to the supervisor and do not expose
+`MODEL_WORKLOG_TOKEN` to a browser. The supervisor is loopback-only by design;
+your application backend decides which authenticated viewers may receive its
+already-redacted events.
+
 ## Record A Session
 
 ```ts
+import { readFile } from 'node:fs/promises';
 import { LocalSupervisorClient } from 'model-worklog-sdk';
 
 const client = await LocalSupervisorClient.fromLocalEnvironment();
 const session = await client.startSession({
   workspacePath: process.cwd(),
   actor: 'my-ai-adapter',
+  title: 'Fix the failing parser test',
 });
 
-await session.message('I will inspect the failing test.');
-await session.summary('Located the failing assertion and selected a repair.');
-await session.toolCalled({ tool: 'read_file', arguments: { path: 'src/app.ts' } });
-await session.toolCompleted({ tool: 'read_file', success: true });
+await session.userMessage('Fix the failing parser test.');
+await session.plan('Read the parser and test, then make the smallest repair.', [
+  'Read src/parser.ts',
+  'Read src/parser.test.ts',
+  'Run the focused test',
+]);
+await session.reasoningSummary('The expected value appears outdated.');
+
+const contents = await session.runTool(
+  { tool: 'read_file', arguments: { path: 'src/parser.ts' }, correlationId: 'tool_read_1' },
+  () => readFile('src/parser.ts', 'utf8'),
+);
 await session.fileRead({ path: 'src/app.ts', tool: 'read_file' });
 await session.commandStarted({ executable: 'npm', args: ['test'] });
 await session.commandCompleted({ executable: 'npm', args: ['test'], exitCode: 0 });
 await session.fileChanged({ path: 'src/app.ts', operation: 'modified' });
 await session.testCompleted({ name: 'npm test', success: true, durationMs: 842 });
+await session.summary(`Reviewed ${contents.length} characters and completed the repair.`);
 await session.complete();
 ```
 
-`summary()` is for a user-visible summary. Do not submit hidden reasoning or private chain-of-thought.
+Use `userMessage()` and `agentMessage()` for visible conversation, `plan()` for
+a high-level plan, and `reasoningSummary()` only for a provider-visible summary.
+`runTool()` records a correlated `tool.called`/`tool.completed` pair and captures
+a JSON-compatible result or an error. Record file reads and changes when your
+application actually performs them. Do not submit hidden reasoning or private
+chain-of-thought.
 
 ## Token Usage
 
@@ -46,14 +128,32 @@ const response = await openai.responses.create({ model: 'gpt-5.6-terra', input: 
 const report = await session.reportProviderUsage('openai', response);
 
 if (!report.normalized.ok) {
-  console.warn(`Usage unavailable: ${report.normalized.reason}`);
+  console.warn(`Token count was not reported: ${report.normalized.reason}`);
 }
 ```
 
 Built-in normalizers support OpenAI Responses, OpenAI-compatible Chat Completions, Anthropic Messages, and Gemini GenerateContent. A different provider can use explicit response-field mappings. For streaming APIs, submit the final cumulative response once.
 
+If a provider response has no usage counters, Logger does not invent a token total or add a warning update to the log. The completed log simply shows that a token count was not reported.
+
+## Provider And Agent Integration
+
+Model Logger can be integrated with any agent runtime that can call the Node SDK
+from its backend or the local HTTP API. It cannot passively discover activity inside arbitrary
+processes: the runtime needs to call the SDK where it receives visible messages,
+plans, tool callbacks, file operations, command results, and provider responses.
+
+| Agent or provider | Integration path | What is retained |
+| --- | --- | --- |
+| Codex App Server | Use VS Code **Log a Codex Task** or `POST /v1/codex-sessions`. | Direct documented events as `observed-native`, plus process lifecycle as `observed-boundary`. |
+| Claude Code | Bridge documented hook payloads with `ClaudeCodeAdapter` and a `WorklogSession`. | Hook-reported lifecycle, instruction, tool, file, and visible summary events as `model-declared`. |
+| GitHub Copilot | Call the generic SDK from your Copilot-based agent, extension integration, or tool wrapper where visible events are available. | The events your integration supplies as `model-declared`. VS Code Copilot Chat is not passively captured. |
+| OpenAI or OpenAI-compatible | Use the generic SDK around tool execution and pass the final response to `reportProviderUsage('openai', response)`. | Visible activity and provider token usage as `model-declared`. |
+| Gemini | Use the generic SDK around tool execution and pass the final response to `reportProviderUsage('gemini', response)`. | Visible activity and provider token usage as `model-declared`. |
+| Other agents and frameworks | Call the same SDK methods from the agent loop or framework callbacks. Use `TokenUsageMapping` for an unrecognized usage response. | Only events the integration actually reports, marked `model-declared`; unsupported visibility is `unknown`. |
+
 ## Codex
 
-The VS Code **Start Codex Session** command launches `codex app-server` through the local supervisor for one task. The relay retains documented visible messages, plans, reasoning summaries, commands, command output, files, errors, instruction-source paths, usage updates, and terminal status. It supports user cancellation plus duration and reported-token limits.
+The VS Code **Log a Codex Task** command launches `codex app-server` through the local supervisor for one task. The relay retains documented visible messages, plans, reasoning summaries, commands, command output, files, errors, instruction-source paths, usage updates, and terminal status. It supports user cancellation plus duration and reported-token limits.
 
-Codex is the current direct-launch adapter. Other AI systems integrate through their documented hook, API, or framework callback surface and keep their appropriate evidence grade.
+Codex is the current direct-launch adapter. Other AI systems integrate through their documented hook, API, or framework callback surface and keep their appropriate `model-declared` or `unknown` evidence grade.

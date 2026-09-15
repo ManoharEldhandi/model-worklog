@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -191,12 +191,14 @@ test('logs renders a readable timeline and one canonical event per JSONL line', 
 	const apiFetch: FetchLike = async (input) => {
 		const path = new URL(input).pathname;
 		if (path === '/v1/sessions/ses_demo') {
-			return new Response(JSON.stringify({ schemaVersion: 1, session: validSession() }), { status: 200 });
+			return new Response(JSON.stringify({ schemaVersion: 1, session: validSession({ title: 'Fix parser test output' }) }), { status: 200 });
 		}
 		return new Response(JSON.stringify({ schemaVersion: 1, sessionId: 'ses_demo', events }), { status: 200 });
 	};
 	const pretty = await run(['logs', 'ses_demo', '--format', 'pretty'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' }, true);
 	assert.equal(pretty.code, ExitCode.Ok);
+	assert.match(pretty.stdout, /Log: Fix parser test output/);
+	assert.match(pretty.stdout, /Session: ses_demo/);
 	assert.match(pretty.stdout, /agent\.summary/);
 	assert.match(pretty.stdout, /Read the requested file/);
 	assert.match(pretty.stdout, /Tokens: 20 total/);
@@ -255,6 +257,10 @@ test('export writes a supervisor-generated bundle and verify delegates manifest 
 	const outputPath = join(directory, 'session.bundle.json');
 	const bundle = { schemaVersion: 1, kind: 'model-worklog-evidence-bundle', manifest: { contentSha256: 'abc' } };
 	try {
+		await writeFile(outputPath, 'old export', { encoding: 'utf8', mode: 0o644 });
+		if (process.platform !== 'win32') {
+			await chmod(outputPath, 0o644);
+		}
 		let verifiedBundle: unknown;
 		const apiFetch: FetchLike = async (input, init) => {
 			const pathname = new URL(input).pathname;
@@ -268,6 +274,9 @@ test('export writes a supervisor-generated bundle and verify delegates manifest 
 		const exported = await run(['export', 'ses_demo', '--output', outputPath, '--format', 'json'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' });
 		assert.equal(exported.code, ExitCode.Ok);
 		assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), bundle);
+		if (process.platform !== 'win32') {
+			assert.equal((await stat(outputPath)).mode & 0o777, 0o600);
+		}
 		assert.deepEqual(JSON.parse(exported.stdout) as { command: string; result: { outputPath: string } }, { schemaVersion: 1, command: 'export', result: { sessionId: 'ses_demo', outputPath } });
 		const verified = await run(['verify', outputPath, '--format', 'json'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' });
 		assert.equal(verified.code, ExitCode.Internal);

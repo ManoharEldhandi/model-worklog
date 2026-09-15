@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { AUTH_TOKEN_FILE, createOrLoadAuthToken, tokensMatch } from './state';
+import { acquireExclusiveStoreLock, AUTH_TOKEN_FILE, createOrLoadAuthToken, STORE_LOCK_FILE, tokensMatch } from './state';
 
 const temporaryDirectories: string[] = [];
 
@@ -46,4 +46,14 @@ test('compares tokens without accepting a prefix or a missing value', () => {
 	assert.equal(tokensMatch('abcdefgh', 'abcdefgh'), true);
 	assert.equal(tokensMatch('abcdefgh', 'abcdefg'), false);
 	assert.equal(tokensMatch('abcdefgh', undefined), false);
+});
+
+test('recovers an abandoned store lock with an invalid owner PID', async () => {
+	const dataDirectory = join(await temporaryDirectory(), 'store');
+	await createOrLoadAuthToken(dataDirectory);
+	await writeFile(join(dataDirectory, STORE_LOCK_FILE), `${JSON.stringify({ instanceId: 'abandoned', pid: -1 })}\n`, { encoding: 'utf8', mode: 0o600 });
+
+	const lock = await acquireExclusiveStoreLock(dataDirectory, 'replacement');
+	await lock.close();
+	await assert.rejects(stat(join(dataDirectory, STORE_LOCK_FILE)), { code: 'ENOENT' });
 });

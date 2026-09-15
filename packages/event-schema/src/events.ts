@@ -102,6 +102,8 @@ export interface WorkspaceReference {
 export interface SessionRecord {
 	readonly schemaVersion: number;
 	readonly sessionId: string;
+	/** Optional user-visible task name, supplied by an integration or derived from its first user request. */
+	readonly title?: string;
 	readonly runMode: RunMode;
 	readonly state: SessionState;
 	readonly actor: string;

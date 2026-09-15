@@ -37,6 +37,20 @@ test('persists redacted, supervisor-sequenced events without a raw workspace pat
 	});
 });
 
+test('stores a redacted supplied task name or derives one from the first user request', async () => {
+	await withLedger(async (ledger) => {
+		const supplied = await ledger.createSession({ runMode: 'observe', actor: 'demo-agent', workspacePath: '/workspace', title: 'Fix apiKey=top-secret parser test' });
+		assert.equal(supplied.title, 'Fix apiKey=[REDACTED] parser test');
+
+		const inferred = await ledger.createSession({ runMode: 'observe', actor: 'demo-agent', workspacePath: '/workspace' });
+		await ledger.append(inferred.sessionId, {
+			kind: 'agent.message', actor: 'demo-agent', evidenceGrade: 'model-declared',
+			payload: { role: 'user', text: 'Review the parser failure and update the test.' },
+		});
+		assert.equal((await ledger.getSession(inferred.sessionId))?.title, 'Review the parser failure and update the test.');
+	});
+});
+
 test('aggregates explicitly reported token totals and retains unknown otherwise', async () => {
 	await withLedger(async (ledger) => {
 		const session = await ledger.createSession({ runMode: 'observe', actor: 'demo-agent', workspacePath: '/workspace' });

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import type { EventKind, SessionEvent } from 'model-worklog-schema';
+import { formatSessionEventText, type EventKind, type SessionEvent } from 'model-worklog-schema';
 
 import { ExitCode } from '../constants';
 import type { CommandContext } from '../context';
@@ -52,28 +52,9 @@ function queryPath(sessionId: string, afterSequence: number, options: WatchOptio
 	return `/v1/sessions/${encodeURIComponent(sessionId)}/events?${query.toString()}`;
 }
 
-function subject(event: SessionEvent): string {
-	const payload = event.payload as Record<string, unknown>;
-	if (typeof payload.summary === 'string') {
-		return payload.summary.replace(/[\r\n]+/g, ' ').slice(0, 120);
-	}
-	if (typeof payload.text === 'string') {
-		return payload.text.replace(/[\r\n]+/g, ' ').slice(0, 120);
-	}
-	if (typeof payload.executable === 'string') {
-		const args = Array.isArray(payload.args) ? payload.args.filter((value): value is string => typeof value === 'string') : [];
-		return [payload.executable, ...args].join(' ').slice(0, 120);
-	}
-	if (typeof payload.path === 'string') {
-		return payload.path.slice(0, 120);
-	}
-	return JSON.stringify(payload).replace(/[\r\n]+/g, ' ').slice(0, 120);
-}
-
 function writePrettyEvent(context: CommandContext, event: SessionEvent): void {
-	writeLine(context.stdout, `${String(event.sequence).padEnd(4)} ${event.occurredAt.slice(11, 23).padEnd(13)} ${event.evidenceGrade.padEnd(18)} ${event.actor.padEnd(12)} ${event.kind.padEnd(20)} ${subject(event)}`);
-	if (event.unknownReason !== undefined) {
-		writeLine(context.stdout, `     evidence gap: ${event.unknownReason}`);
+	for (const line of formatSessionEventText(event)) {
+		writeLine(context.stdout, line);
 	}
 }
 
@@ -92,7 +73,6 @@ export async function watchCommand(context: CommandContext, sessionId: string | 
 	const collected: SessionEvent[] = [];
 	if (context.format === 'pretty') {
 		writeLine(context.stdout, `Watching session ${sessionId} from sequence ${cursor + 1}`);
-		writeLine(context.stdout, 'SEQ  TIME          GRADE              ACTOR        KIND                 SUBJECT');
 	}
 
 	for (;;) {

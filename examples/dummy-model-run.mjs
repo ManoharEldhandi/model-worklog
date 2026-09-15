@@ -37,26 +37,35 @@ async function main() {
 		});
 
 		const prompt = 'Summarize the current product health.';
-		await session.message(`Visible request: ${prompt}`);
+		await session.userMessage(prompt);
+		await session.plan('Check the service status, inspect the implementation, then summarize the result.', [
+			'Check product status',
+			'Review the health implementation',
+			'Run the product check',
+			'Summarize the observable result',
+		]);
+		await session.reasoningSummary('The status result and the current health implementation are sufficient to produce a concise review.');
 
-		const correlationId = 'tool_product_status_001';
-		await session.toolCalled({
+		const status = await session.runTool({
 			tool: 'get_product_status',
 			arguments: { scope: 'demo' },
-			correlationId,
-		});
-		await session.toolCompleted({
-			tool: 'get_product_status',
-			success: true,
-			result: { status: 'healthy', checkedServices: 3 },
-			correlationId,
-		});
+			correlationId: 'tool_product_status_001',
+		}, async () => ({ status: 'healthy', checkedServices: 3 }));
+		await session.fileRead({ path: 'src/health.ts', tool: 'read_file', correlationId: 'tool_read_health_001' });
+		await session.runTool({
+			tool: 'read_file',
+			arguments: { path: 'src/health.ts', lineRange: [1, 120] },
+			correlationId: 'tool_read_health_001',
+		}, async () => ({ linesRead: 48, exportedFunction: 'buildHealthResponse' }));
+		await session.fileChanged({ path: 'docs/product-health.md', operation: 'modified', correlationId: 'tool_update_docs_001' });
+		await session.commandStarted({ executable: 'npm', args: ['test', '--', 'health'], correlationId: 'command_health_001' });
+		await session.commandCompleted({ executable: 'npm', args: ['test', '--', 'health'], exitCode: 0, correlationId: 'command_health_001' });
 
 		const result = await runDummyModel(prompt);
-		await session.summary(result.answer);
+		await session.summary(`${result.answer} Product status: ${status.status}; services checked: ${status.checkedServices}.`);
 		await session.reportProviderUsage('openai', result.providerResponse);
 		await session.testCompleted({
-			name: 'dummy-model-response-contract',
+			name: 'dummy-model-response-check',
 			success: true,
 			durationMs: 12,
 		});

@@ -40,23 +40,23 @@
         "category": "Model Logger"
       },
       {
+        "command": "model-worklog.disable",
+        "title": "Disable Model Logger",
+        "category": "Model Logger"
+      },
+      {
         "command": "model-worklog.reconnect",
-        "title": "Reconnect Local Logger",
+        "title": "Reconnect Model Logger",
         "category": "Model Logger"
       },
       {
         "command": "model-worklog.startCodexSession",
-        "title": "Log a Codex Session",
+        "title": "Log a Codex Task",
         "category": "Model Logger"
       },
       {
         "command": "model-worklog.startLoggedCommand",
         "title": "Log a Command",
-        "category": "Model Logger"
-      },
-      {
-        "command": "model-worklog.stopSession",
-        "title": "Stop Active Session",
         "category": "Model Logger"
       },
       {
@@ -66,29 +66,48 @@
       },
       {
         "command": "model-worklog.openSessionLog",
-        "title": "Open Log",
+        "title": "View Log",
         "category": "Model Logger"
       },
       {
         "command": "model-worklog.exportEvidenceBundle",
-        "title": "Export Log",
+        "title": "Download Log JSON",
+        "category": "Model Logger"
+      },
+      {
+        "command": "model-worklog.deleteSession",
+        "title": "Delete Saved Log",
         "category": "Model Logger"
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "model-worklog",
-          "title": "Model Logger",
-          "icon": "media/model-worklog.svg"
-        }
-      ]
-    },
     "views": {
       "model-worklog": [
         {
           "id": "model-worklog.sessions",
           "name": "Logs"
+        }
+      ],
+      "model-worklog-details": [
+        {
+          "id": "model-worklog.logDetails",
+          "name": "Log Details",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "model-worklog-details",
+          "title": "Model Logger",
+          "icon": "media/model-worklog.svg"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "model-worklog",
+          "title": "Model Logger",
+          "icon": "media/model-worklog.svg"
         }
       ]
     },

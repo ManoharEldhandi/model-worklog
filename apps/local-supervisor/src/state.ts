@@ -17,6 +17,10 @@ export interface StoreLock {
 	close(): Promise<void>;
 }
 
+interface StoredLockOwner {
+	readonly pid?: unknown;
+}
+
 export function defaultDataDirectory(): string {
 	return process.env.MODEL_WORKLOG_HOME ?? join(homedir(), '.model-worklog');
 }
@@ -44,6 +48,24 @@ async function ensurePrivateFile(path: string, description: string): Promise<voi
 	}
 }
 
+async function hasDefinitelyInactiveLockOwner(path: string): Promise<boolean> {
+	let owner: StoredLockOwner;
+	try {
+		owner = JSON.parse(await readFile(path, 'utf8')) as StoredLockOwner;
+	} catch {
+		return false;
+	}
+	if (typeof owner.pid !== 'number' || !Number.isInteger(owner.pid) || owner.pid < 1) {
+		return true;
+	}
+	try {
+		process.kill(owner.pid, 0);
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'ESRCH';
+	}
+}
+
 /**
  * Claims exclusive ownership of a local evidence directory. A stale lock is
  * intentionally not deleted automatically: safe stale-lock recovery requires
@@ -56,10 +78,21 @@ export async function acquireExclusiveStoreLock(dataDirectory: string, instanceI
 	try {
 		handle = await open(destination, 'wx', 0o600);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+			throw error;
+		}
+		if (!await hasDefinitelyInactiveLockOwner(destination)) {
 			throw new Error(`another supervisor already owns ${dataDirectory}; stop it before starting another instance`);
 		}
-		throw error;
+		await unlink(destination);
+		try {
+			handle = await open(destination, 'wx', 0o600);
+		} catch (retryError) {
+			if ((retryError as NodeJS.ErrnoException).code === 'EEXIST') {
+				throw new Error(`another supervisor started while recovering ${dataDirectory}; retry after it stops`);
+			}
+			throw retryError;
+		}
 	}
 	try {
 		await handle.writeFile(`${JSON.stringify({ instanceId, pid: process.pid, startedAt: new Date().toISOString() })}\n`, 'utf8');

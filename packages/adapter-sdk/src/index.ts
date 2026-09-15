@@ -1,8 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+	isJsonValue,
 	type EventKind,
 	type JsonObject,
 	type JsonValue,
@@ -16,6 +18,7 @@ import { normalizeProviderUsage, type TokenUsageMapping, type UsageNormalization
 
 export * from './usage';
 export * from './vendorAdapters';
+export { formatSessionEventText, presentSessionEvent } from 'model-worklog-schema';
 
 export const DEFAULT_SUPERVISOR_URL = 'http://127.0.0.1:43199' as const;
 
@@ -38,6 +41,8 @@ export interface StartSessionOptions {
 	readonly workspacePath: string;
 	readonly actor: string;
 	readonly runMode?: Extract<RunMode, 'observe' | 'managed'>;
+	/** Task name shown in log lists and used as the JSON download filename stem. */
+	readonly title?: string;
 }
 
 export interface ToolCall {
@@ -50,7 +55,12 @@ export interface ToolResult {
 	readonly tool: string;
 	readonly success: boolean;
 	readonly result?: JsonValue;
+	readonly error?: string;
 	readonly correlationId?: string;
+}
+
+export interface ToolExecutionOptions<Result> {
+	readonly serializeResult?: (result: Result) => JsonValue | undefined;
 }
 
 export interface CommandActivity {
@@ -84,6 +94,23 @@ export interface ProviderUsageReport {
 	readonly session?: SessionRecord;
 }
 
+export interface SessionEventSnapshot {
+	readonly events: readonly SessionEvent[];
+	readonly cursor: { readonly afterSequence: number; readonly nextSequence: number };
+	readonly terminal: boolean;
+}
+
+export interface FollowSessionEventsOptions {
+	/** First sequence to receive. Defaults to the beginning of the session. */
+	readonly afterSequence?: number;
+	/** Local polling interval. Defaults to 100 ms; the minimum is 25 ms. */
+	readonly intervalMs?: number;
+	/** Stops following without changing the session state. */
+	readonly signal?: AbortSignal;
+}
+
+export type SessionEventListener = (event: SessionEvent) => void | Promise<void>;
+
 interface ApiErrorBody {
 	readonly error?: { readonly message?: string };
 }
@@ -109,8 +136,8 @@ export class SupervisorRequestError extends Error {
 function assertLoopbackUrl(raw: string): URL {
 	const url = new URL(raw);
 	const host = url.hostname.replace(/^\[(.+)\]$/, '$1');
-	if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !['127.0.0.1', 'localhost', '::1'].includes(host)) {
-		throw new Error('supervisorUrl must use http(s) on a loopback host');
+	if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(host)) {
+		throw new Error('supervisorUrl must use loopback HTTP');
 	}
 	return url;
 }
@@ -153,6 +180,7 @@ export class LocalSupervisorClient {
 			workspacePath: options.workspacePath,
 			actor: options.actor,
 			runMode: options.runMode ?? 'observe',
+			...(options.title === undefined ? {} : { title: options.title }),
 		});
 		return new WorklogSession(this, response.session, options.actor);
 	}
@@ -189,13 +217,28 @@ export class LocalSupervisorClient {
 		return response.session;
 	}
 
-	private async request<T>(pathname: string, method: string, body: JsonObject): Promise<T> {
+	async getEventSnapshot(sessionId: string, afterSequence: number): Promise<SessionEventSnapshot> {
+		const response = await this.request<Partial<SessionEventSnapshot>>(`/v1/sessions/${encodeURIComponent(sessionId)}/events?afterSequence=${afterSequence}`, 'GET');
+		if (!Array.isArray(response.events)
+			|| typeof response.cursor?.afterSequence !== 'number'
+			|| typeof response.cursor.nextSequence !== 'number'
+			|| typeof response.terminal !== 'boolean') {
+			throw new SupervisorRequestError(200, 'Supervisor returned malformed session events.');
+		}
+		return {
+			events: response.events as SessionEvent[],
+			cursor: { afterSequence: response.cursor.afterSequence, nextSequence: response.cursor.nextSequence },
+			terminal: response.terminal,
+		};
+	}
+
+	private async request<T>(pathname: string, method: string, body?: JsonObject): Promise<T> {
 		let response: Response;
 		try {
 			response = await this.fetchImpl(new URL(pathname, this.baseUrl), {
 				method,
 				headers: { 'content-type': 'application/json', 'x-model-worklog-token': this.options.token },
-				body: JSON.stringify(body),
+				...(body === undefined ? {} : { body: JSON.stringify(body) }),
 				signal: AbortSignal.timeout(5_000),
 			});
 		} catch (error) {
@@ -227,9 +270,31 @@ export class WorklogSession {
 		return this.client.emit(this.record.sessionId, this.actor, 'agent.message', { text });
 	}
 
+	userMessage(text: string): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.message', { text, role: 'user' });
+	}
+
+	agentMessage(text: string): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.message', { text, role: 'assistant' });
+	}
+
 	/** Stores a user-visible model declaration, never private chain-of-thought. */
 	summary(summary: string): Promise<SessionEvent> {
 		return this.client.emit(this.record.sessionId, this.actor, 'agent.summary', { summary });
+	}
+
+	/** Stores a visible high-level plan, never hidden reasoning. */
+	plan(summary: string, plan?: JsonValue): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.summary', {
+			summary,
+			source: 'plan',
+			...(plan === undefined ? {} : { plan }),
+		});
+	}
+
+	/** Stores a provider-visible reasoning summary, never private chain-of-thought. */
+	reasoningSummary(summary: string): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.summary', { summary, source: 'reasoning-summary' });
 	}
 
 	toolCalled(activity: ToolCall): Promise<SessionEvent> {
@@ -244,7 +309,29 @@ export class WorklogSession {
 			tool: activity.tool,
 			success: activity.success,
 			...(activity.result === undefined ? {} : { result: activity.result }),
+			...(activity.error === undefined ? {} : { error: activity.error }),
 		}, activity.correlationId);
+	}
+
+	async runTool<Result>(activity: ToolCall, operation: () => Promise<Result>, options: ToolExecutionOptions<Result> = {}): Promise<Result> {
+		await this.toolCalled(activity);
+		let result: Result;
+		try {
+			result = await operation();
+		} catch (error) {
+			await this.toolCompleted({
+				tool: activity.tool,
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+				correlationId: activity.correlationId,
+			});
+			throw error;
+		}
+		const serialized = options.serializeResult === undefined
+			? isJsonValue(result) ? result : undefined
+			: options.serializeResult(result);
+		await this.toolCompleted({ tool: activity.tool, success: true, ...(serialized === undefined ? {} : { result: serialized }), correlationId: activity.correlationId });
+		return result;
 	}
 
 	commandStarted(activity: CommandActivity): Promise<SessionEvent> {
@@ -307,5 +394,36 @@ export class WorklogSession {
 
 	unknown(kind: EventKind, reason: UnknownReason, payload: JsonObject = {}): Promise<SessionEvent> {
 		return this.client.emitUnknown(this.record.sessionId, this.actor, kind, reason, payload);
+	}
+
+	/**
+	 * Delivers all committed, already-redacted events for this session until it
+	 * reaches a terminal state or the caller aborts. Run this in an application
+	 * backend and forward events to browser clients without exposing local tokens.
+	 */
+	async followEvents(listener: SessionEventListener, options: FollowSessionEventsOptions = {}): Promise<void> {
+		const afterSequence = options.afterSequence ?? 0;
+		const intervalMs = options.intervalMs ?? 100;
+		if (!Number.isInteger(afterSequence) || afterSequence < 0) {
+			throw new Error('afterSequence must be a non-negative integer');
+		}
+		if (!Number.isInteger(intervalMs) || intervalMs < 25) {
+			throw new Error('intervalMs must be an integer of at least 25');
+		}
+		let cursor = afterSequence;
+		while (!options.signal?.aborted) {
+			const snapshot = await this.client.getEventSnapshot(this.record.sessionId, cursor);
+			for (const event of snapshot.events) {
+				if (options.signal?.aborted) {
+					return;
+				}
+				await listener(event);
+			}
+			cursor = snapshot.cursor.nextSequence;
+			if (snapshot.terminal) {
+				return;
+			}
+			await delay(intervalMs);
+		}
 	}
 }

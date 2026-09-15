@@ -22,5 +22,3 @@ tmp/
 model-worklog*.bundle.json
 *.tgz
 .eslintcache
-AGENTS.md
-HANDOFF.md

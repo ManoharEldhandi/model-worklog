@@ -10,11 +10,11 @@ export interface RedactionResult<T> {
 
 const SECRET_PATTERNS: readonly RegExp[] = [
 	/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi,
-	/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b/g,
+	/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[abopr]-[A-Za-z0-9-]{20,}|npm_[A-Za-z0-9]{20,})\b/g,
 	/(\b(?:api[_-]?key|access[_-]?token|authorization|password|secret|token)\b["']?\s*[:=]\s*["']?)([^\s,"'}\]]+)/gi,
 ];
 
-const SENSITIVE_KEY = /(?:^|[_-])(api[_-]?key|access[_-]?token|authorization|password|secret|token)(?:$|[_-])/i;
+const SENSITIVE_KEY = /(?:^|[_-])(api[_-]?key|access[_-]?token|authorization|password|secret|token|private[_-]?key|client[_-]?secret|refresh[_-]?token|id[_-]?token|cookie)(?:$|[_-])/i;
 
 export function redactText(input: string): RedactionResult<string> {
 	let replacements = 0;

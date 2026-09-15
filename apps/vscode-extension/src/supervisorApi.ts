@@ -6,6 +6,7 @@ import type { SessionEvent, TokenUsageSummary } from 'model-worklog-schema';
 
 export interface SupervisorSession {
 	readonly sessionId: string;
+	readonly title?: string;
 	readonly state: string;
 	readonly runMode: string;
 	readonly actor: string;
@@ -109,6 +110,13 @@ export async function startCodexSession(baseUrl: URL, workspacePath: string, tas
 
 export async function cancelSession(baseUrl: URL, sessionId: string): Promise<void> {
 	await request(baseUrl, `/v1/sessions/${encodeURIComponent(sessionId)}/cancel`, 'POST', {});
+}
+
+export async function deleteSession(baseUrl: URL, sessionId: string): Promise<void> {
+	const result = await request<{ deleted?: unknown; sessionId?: unknown }>(baseUrl, `/v1/sessions/${encodeURIComponent(sessionId)}`, 'DELETE');
+	if (result.deleted !== true || result.sessionId !== sessionId) {
+		throw new Error('The local Logger returned an invalid delete result.');
+	}
 }
 
 export async function getSessionEvents(baseUrl: URL, sessionId: string): Promise<readonly SessionEvent[]> {

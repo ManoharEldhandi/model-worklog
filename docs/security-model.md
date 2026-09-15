@@ -6,9 +6,9 @@ retaining evidence on the host where the workspace runs.
 
 ## Protections
 
-- The supervisor refuses non-loopback binds. The extension accepts only
-  `127.0.0.1`, `localhost`, or `::1` over HTTP and normalizes
-  `localhost` to `127.0.0.1`.
+- The supervisor, extension, and SDK accept only `127.0.0.1`, `localhost`, or
+  `::1` over HTTP and normalize `localhost` to `127.0.0.1` where they launch a
+  supervisor.
 - Every non-health API call requires a per-installation, 256-bit local token.
   Token comparison is timing-safe.
 - The store directory and token are hardened to owner-only POSIX permissions
@@ -18,9 +18,14 @@ retaining evidence on the host where the workspace runs.
   a command or starts a Codex session.
 - Commands are argument arrays, not shell strings. Git inspection disables
   repository hooks and external diff/text-conversion drivers.
+- The supervisor owns every managed child process. A stop request records the
+  cancellation, sends `SIGTERM`, and uses `SIGKILL` only after a bounded grace
+  period when the process remains alive.
 - Evidence is redacted before storage, responses, search, or export. API
   responses are marked `no-store` and carry restrictive browser-oriented
   response headers.
+- CLI evidence exports use owner-only POSIX permissions, even when replacing an
+  existing file.
 - The supervisor has bounded request bodies and conservative HTTP timeouts.
 
 Because the service never listens on a network interface, ordinary network

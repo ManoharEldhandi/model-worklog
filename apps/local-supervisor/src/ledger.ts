@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 
@@ -19,12 +19,13 @@ import {
 	type UnknownReason,
 } from 'model-worklog-schema';
 
-import { REDACTION_POLICY_VERSION, redactJson } from './redaction';
+import { REDACTION_POLICY_VERSION, redactJson, redactText } from './redaction';
 
 export interface CreateSessionInput {
 	readonly runMode: RunMode;
 	readonly actor: string;
 	readonly workspacePath: string;
+	readonly title?: string;
 }
 
 export interface EventDraft {
@@ -49,12 +50,14 @@ export interface EvidenceLedger {
 	complete(sessionId: string, state: Extract<SessionState, 'completed' | 'failed' | 'interrupted'>): Promise<SessionRecord>;
 	recordUsage(sessionId: string, usage: TokenUsage, observation?: UsageObservation): Promise<SessionRecord>;
 	recordUsageUnknown(sessionId: string, reason: UnknownReason): Promise<SessionRecord>;
+	deleteSession(sessionId: string): Promise<void>;
 	getSession(sessionId: string): Promise<SessionRecord | undefined>;
 	listSessions(): Promise<readonly SessionRecord[]>;
 	listEvents(sessionId: string): Promise<readonly SessionEvent[]>;
 }
 
 const SESSIONS_DIRECTORY = 'sessions';
+const MAX_SESSION_TITLE_CHARS = 160;
 
 export function workspaceFingerprint(workspacePath: string): string {
 	return createHash('sha256').update(workspacePath).digest('hex');
@@ -70,6 +73,20 @@ function eventPath(root: string, sessionId: string): string {
 
 function isTerminal(state: SessionState): boolean {
 	return state === 'completed' || state === 'failed' || state === 'interrupted';
+}
+
+function normalizeSessionTitle(value: string | undefined): string | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	const redacted = redactText(value).value.replace(/\s+/g, ' ').trim();
+	return redacted === '' ? undefined : redacted.slice(0, MAX_SESSION_TITLE_CHARS);
+}
+
+function derivedSessionTitle(kind: EventKind, payload: JsonObject): string | undefined {
+	return kind === 'agent.message' && payload.role === 'user' && typeof payload.text === 'string'
+		? normalizeSessionTitle(payload.text)
+		: undefined;
 }
 
 export function workspaceReference(workspacePath: string): SessionRecord['workspace'] {
@@ -190,9 +207,11 @@ export class FileEvidenceLedger implements EvidenceLedger {
 	async createSession(input: CreateSessionInput): Promise<SessionRecord> {
 		const createdAt = this.now().toISOString();
 		const sessionId = `ses_${randomUUID()}`;
+		const title = normalizeSessionTitle(input.title);
 		const session: SessionRecord = {
 			schemaVersion: SCHEMA_VERSION,
 			sessionId,
+			...(title === undefined ? {} : { title }),
 			runMode: input.runMode,
 			state: 'running',
 			actor: input.actor,
@@ -246,7 +265,8 @@ export class FileEvidenceLedger implements EvidenceLedger {
 				throw new Error(`internal event validation failed: ${parsed.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ')}`);
 			}
 			await appendFile(eventPath(this.root, sessionId), `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
-			const updated = { ...session, eventCount: event.sequence };
+			const title = session.title ?? derivedSessionTitle(draft.kind, redactedPayload.value as JsonObject);
+			const updated: SessionRecord = { ...session, eventCount: event.sequence, ...(title === undefined ? {} : { title }) };
 			this.sessions.set(sessionId, updated);
 			await this.writeSession(updated);
 			result = event;
@@ -335,6 +355,24 @@ export class FileEvidenceLedger implements EvidenceLedger {
 			await this.writeSession(updated);
 		});
 		return this.requireSession(sessionId);
+	}
+
+	async deleteSession(sessionId: string): Promise<void> {
+		await this.enqueue(async () => {
+			const session = await this.requireSession(sessionId);
+			if (!isTerminal(session.state)) {
+				throw new Error(`session ${sessionId} is still running`);
+			}
+			await Promise.all([
+				unlink(sessionPath(this.root, sessionId)),
+				unlink(eventPath(this.root, sessionId)).catch((error: unknown) => {
+					if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+						throw error;
+					}
+				}),
+			]);
+			this.sessions.delete(sessionId);
+		});
 	}
 
 	async getSession(sessionId: string): Promise<SessionRecord | undefined> {
