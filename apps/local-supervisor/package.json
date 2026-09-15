@@ -1,0 +1,27 @@
+{
+  "name": "model-worklog-supervisor",
+  "version": "0.1.0",
+  "description": "Local runtime for durable Model Worklog sessions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "model-worklog-supervisor": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/main.js",
+    "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "model-worklog-sdk": "^0.1.0",
+    "model-worklog-schema": "^0.1.0"
+  }
+}

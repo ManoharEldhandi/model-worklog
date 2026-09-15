@@ -1,0 +1,145 @@
+{
+  "name": "model-worklog",
+  "displayName": "Model Worklog",
+  "description": "Local AI session logging and review",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+  },
+  "engines": {
+    "vscode": "^1.137.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "model-worklog.enable",
+        "title": "Enable Model Worklog",
+        "category": "Model Worklog"
+      },
+      {
+        "command": "model-worklog.reconnect",
+        "title": "Reconnect Local Logger",
+        "category": "Model Worklog"
+      },
+      {
+        "command": "model-worklog.startCodexSession",
+        "title": "Start Codex Session",
+        "category": "Model Worklog"
+      },
+      {
+        "command": "model-worklog.startLoggedCommand",
+        "title": "Start Logged Command",
+        "category": "Model Worklog"
+      },
+      {
+        "command": "model-worklog.stopSession",
+        "title": "Stop Active Session",
+        "category": "Model Worklog"
+      },
+      {
+        "command": "model-worklog.refreshSessions",
+        "title": "Refresh Sessions",
+        "category": "Model Worklog"
+      },
+      {
+        "command": "model-worklog.openSessionLog",
+        "title": "Open Session Log",
+        "category": "Model Worklog"
+      },
+      {
+        "command": "model-worklog.exportEvidenceBundle",
+        "title": "Export Session Evidence",
+        "category": "Model Worklog"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "model-worklog",
+          "title": "Model Worklog",
+          "icon": "media/model-worklog.svg"
+        }
+      ]
+    },
+    "views": {
+      "model-worklog": [
+        {
+          "id": "model-worklog.sessions",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Model Worklog",
+      "properties": {
+        "model-worklog.supervisorUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:43199",
+          "description": "Loopback URL for the local Model Worklog supervisor.",
+          "scope": "machine"
+        },
+        "model-worklog.codex.defaultDurationMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 240,
+          "description": "Maximum duration for a supervisor-managed Codex session.",
+          "scope": "machine"
+        },
+        "model-worklog.codex.defaultTokenBudget": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 1,
+          "maximum": 2000000,
+          "description": "Maximum reported token budget for a supervisor-managed Codex session.",
+          "scope": "machine"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "vsix": "npm run package && vsce package --no-dependencies --allow-missing-repository --out model-worklog-0.1.0.vsix",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "dependencies": {
+    "model-worklog-schema": "file:../../packages/event-schema"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/vscode": "^1.137.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}

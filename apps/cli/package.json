@@ -1,0 +1,26 @@
+{
+  "name": "model-worklog",
+  "version": "0.1.0",
+  "description": "Local-first command-line client for Model Worklog",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "model-worklog": "dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "model-worklog-schema": "^0.1.0",
+    "model-worklog-supervisor": "^0.1.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "model-worklog-sdk",
+  "version": "0.1.0",
+  "description": "Local integration client for Model Worklog evidence sessions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "model-worklog-schema": "^0.1.0"
+  }
+}

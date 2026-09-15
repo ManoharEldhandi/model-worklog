@@ -1,0 +1,34 @@
+{
+  "name": "model-worklog-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local AI session logging and review",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/cli",
+    "apps/local-supervisor"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "typecheck": "tsc -b",
+    "test": "npm run build && npm run test:workspaces",
+    "test:workspaces": "npm run test --workspaces --if-present",
+    "supervisor": "node apps/local-supervisor/dist/main.js",
+    "cli": "node apps/cli/dist/bin.js",
+    "package:extension": "npm --prefix apps/vscode-extension run vsix",
+    "pack:check": "npm run build && npm pack --dry-run --workspace model-worklog-schema && npm pack --dry-run --workspace model-worklog-supervisor && npm pack --dry-run --workspace model-worklog && npm pack --dry-run --workspace model-worklog-sdk"
+  },
+  "devDependencies": {
+    "@types/node": "24.x",
+    "typescript": "^6.0.3"
+  }
+}
