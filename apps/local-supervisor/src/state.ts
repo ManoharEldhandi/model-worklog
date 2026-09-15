@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,13 +21,36 @@ export function defaultDataDirectory(): string {
 	return process.env.MODEL_WORKLOG_HOME ?? join(homedir(), '.model-worklog');
 }
 
+async function ensurePrivateDirectory(dataDirectory: string): Promise<void> {
+	await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+	const metadata = await lstat(dataDirectory);
+	if (!metadata.isDirectory()) {
+		throw new Error(`local evidence store must be a directory: ${dataDirectory}`);
+	}
+	// Windows ACLs are not represented by POSIX mode bits. On POSIX, correct
+	// inherited or pre-existing broad permissions before storing credentials.
+	if (process.platform !== 'win32') {
+		await chmod(dataDirectory, 0o700);
+	}
+}
+
+async function ensurePrivateFile(path: string, description: string): Promise<void> {
+	const metadata = await lstat(path);
+	if (!metadata.isFile()) {
+		throw new Error(`${description} must be a regular file: ${path}`);
+	}
+	if (process.platform !== 'win32') {
+		await chmod(path, 0o600);
+	}
+}
+
 /**
  * Claims exclusive ownership of a local evidence directory. A stale lock is
  * intentionally not deleted automatically: safe stale-lock recovery requires
  * an operating-system-level lock or an identity comparison primitive.
  */
 export async function acquireExclusiveStoreLock(dataDirectory: string, instanceId: string): Promise<StoreLock> {
-	await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+	await ensurePrivateDirectory(dataDirectory);
 	const destination = join(dataDirectory, STORE_LOCK_FILE);
 	let handle: Awaited<ReturnType<typeof open>>;
 	try {
@@ -66,9 +89,10 @@ export async function createOrLoadAuthToken(dataDirectory: string, suppliedToken
 	if (suppliedToken !== undefined) {
 		return suppliedToken;
 	}
-	await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+	await ensurePrivateDirectory(dataDirectory);
 	const destination = join(dataDirectory, AUTH_TOKEN_FILE);
 	try {
+		await ensurePrivateFile(destination, 'local authentication token');
 		const existing = (await readFile(destination, 'utf8')).trim();
 		if (existing !== '') {
 			return existing;
@@ -121,7 +145,7 @@ export async function readTrustedWorkspaces(dataDirectory: string): Promise<read
 }
 
 export async function writeTrustedWorkspaces(dataDirectory: string, workspaces: readonly TrustedWorkspace[]): Promise<void> {
-	await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+	await ensurePrivateDirectory(dataDirectory);
 	const destination = join(dataDirectory, TRUSTED_WORKSPACES_FILE);
 	const temporary = `${destination}.${randomBytes(8).toString('hex')}.tmp`;
 	await writeFile(temporary, `${JSON.stringify(workspaces)}\n`, { encoding: 'utf8', mode: 0o600 });

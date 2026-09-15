@@ -1,10 +1,11 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 
 import { probeSupervisor, type SupervisorConnection } from './supervisorClient';
 
 const STARTUP_TIMEOUT_MS = 8_000;
 const RETRY_INTERVAL_MS = 100;
+const DEFAULT_SUPERVISOR_PORT = '43199';
 
 export interface SupervisorProcess {
 	readonly exitCode: number | null;
@@ -38,11 +39,17 @@ export function supervisorEnvironment(url: URL, environment: NodeJS.ProcessEnv =
 	if (!isLoopbackTarget(url)) {
 		throw new Error('The bundled supervisor may start only on a loopback HTTP URL.');
 	}
-	const port = url.port === '' ? '80' : url.port;
+	const port = url.port === '' ? DEFAULT_SUPERVISOR_PORT : url.port;
 	if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
 		throw new Error(`Invalid supervisor port: ${port}`);
 	}
-	return { ...environment, ELECTRON_RUN_AS_NODE: '1', MODEL_WORKLOG_SUPERVISOR_PORT: port };
+	const host = url.hostname.replace(/^\[(.+)\]$/, '$1');
+	return {
+		...environment,
+		ELECTRON_RUN_AS_NODE: '1',
+		MODEL_WORKLOG_SUPERVISOR_HOST: host === 'localhost' ? '127.0.0.1' : host,
+		MODEL_WORKLOG_SUPERVISOR_PORT: port,
+	};
 }
 
 /**

@@ -1,6 +1,6 @@
 # Adapter Support
 
-Model Worklog is open to any integration that can call `model-worklog-sdk`. The common event format and evidence rules are provider-neutral; direct process control is intentionally adapter-specific.
+Model Logger supports any integration that can call `model-worklog-sdk`. The common event format and evidence rules are provider-neutral; direct process control is intentionally adapter-specific.
 
 | Integration | Current Support | Evidence Grade |
 | --- | --- | --- |

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm test
+      - run: npm run pack:check
+      - run: npm --prefix apps/vscode-extension ci
+      - run: npm --prefix apps/vscode-extension audit --omit=dev
+      - run: npm --prefix apps/vscode-extension run vsix
+      - run: xvfb-run -a npm --prefix apps/vscode-extension test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-worklog-vsix
+          path: apps/vscode-extension/*.vsix
+          if-no-files-found: error

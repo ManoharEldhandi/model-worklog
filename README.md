@@ -1,12 +1,12 @@
-# Model Worklog
+# Model Logger
 
-Model Worklog is a local AI session logger. It records what a coding agent visibly does, including messages, plans, tool activity, commands, output, reviewed files, edits, errors, and provider-reported token usage. It stores redacted JSON evidence locally and presents it as a clear timeline in VS Code or the command line.
+Model Logger is a local AI activity logger. It records what a coding agent visibly does: messages, tools, commands, output, reviewed files, edits, errors, and provider-reported token usage. It stores redacted JSON evidence locally and presents a clear log timeline in VS Code or the command line.
 
-It does not record private chain-of-thought. When a provider exposes a readable reasoning summary, Model Worklog can retain that summary with its source and evidence grade.
+It does not record private chain-of-thought. When a provider exposes a readable reasoning summary, Model Logger can retain that summary with its source and evidence grade.
 
 ## What You Install
 
-- **VS Code extension:** Start, follow, stop, and review logged sessions. It bundles the Model Worklog supervisor and starts it after an explicit user action.
+- **Model Logger for VS Code:** Start, follow, stop, and review logged sessions. It bundles the local supervisor and starts it after an explicit user action.
 - **`model-worklog` npm package:** Standalone CLI and compatible local supervisor for terminals, scripts, CI, or custom integrations.
 - **`model-worklog-sdk` npm package:** Adapter SDK for any AI framework that can report observable activity.
 
@@ -14,15 +14,18 @@ The VS Code extension and supervisor run where the workspace runs. In Remote-SSH
 
 ## VS Code
 
-1. Install the Model Worklog VSIX.
-2. Open a trusted workspace.
-3. Run **Model Worklog: Enable Model Worklog**.
-4. Open the **Model Worklog** Activity Bar view.
-5. Select **Start Codex Session** and enter the task.
+1. Download the VSIX from the GitHub release or build it locally with `npm run extension:package`.
+2. Install it with VS Code's **Extensions: Install from VSIX...** command, or run `code --install-extension model-worklog-<version>.vsix`.
+3. Open a trusted workspace.
+4. Run **Model Logger: Enable Model Logger**.
+5. Open the **Model Logger** Activity Bar view.
+6. Select **Log a Codex Session** and enter the task.
 
 The extension starts or reconnects to one local loopback-only supervisor, registers the workspace, launches Codex through its documented App Server interface, and shows live readable evidence for that exact session. Select any retained session to review it later. **Stop Active Session** requests a clean Codex interruption.
 
-Codex must be installed and authenticated on the same host as the workspace. If it is missing or fails, Model Worklog preserves a clear failed session rather than silently losing the run.
+Codex must be installed and authenticated on the same host as the workspace. If it is missing or fails, Model Logger preserves a clear failed session rather than silently losing the run.
+
+After the extension is published to the VS Code Marketplace, install it by its extension identifier: `manohareldhandi.model-worklog`.
 
 ## CLI
 
@@ -64,9 +67,21 @@ await session.summary('The failing assertion uses an outdated expected value.');
 await session.complete();
 ```
 
-External SDK integrations are retained as `model-declared` evidence. Model Worklog never promotes them to direct observation. The Codex App Server relay is different: it directly receives the documented vendor stream, so those retained facts are `observed-native`. Missing or unsupported facts remain `unknown` with a reason.
+External SDK integrations are retained as `model-declared` evidence. Model Logger never promotes them to direct observation. The Codex App Server relay is different: it directly receives the documented vendor stream, so those retained facts are `observed-native`. Missing or unsupported facts remain `unknown` with a reason.
 
 See [Integration](docs/integration.md), [Evidence](docs/evidence-model.md), and [Adapter support](docs/adapter-capability-matrix.md).
+
+For a runnable local product-model example and log-inspection walkthrough, see [Dummy product-model integration](docs/dummy-model-demo.md).
+
+## Development and releases
+
+```sh
+npm ci
+npm run release:check
+npm run extension:test
+```
+
+`release:check` validates all npm package tarballs and creates an installable VSIX. See [the release guide](docs/releasing.md) before publishing to npm or the VS Code Marketplace.
 
 ## Privacy And Storage
 
@@ -75,3 +90,19 @@ See [Integration](docs/integration.md), [Evidence](docs/evidence-model.md), and 
 - Absolute filesystem paths are scrubbed from exported evidence bundles.
 - No workspace upload, telemetry, or hosted service is enabled by default.
 - Evidence bundles are readable JSON with a canonical SHA-256 manifest for local integrity checks.
+
+## License And Contributions
+
+Model Logger is source-available proprietary software, not open source. The
+[Model Logger Package License](LICENSE) permits installation and use of
+official npm packages and VSIX releases, but restricts copying, modification,
+and redistribution of the source. Contributions are welcome solely through
+the limited contribution permission in the license and require the
+[Contributor License Agreement](CLA.md).
+
+This custom license and CLA have not been jurisdiction-reviewed. Have a
+qualified lawyer review them before a public release, especially if you need
+consumer, enterprise, or country-specific terms.
+
+See the [security model](docs/security-model.md) for protections, operating
+requirements, and limitations.

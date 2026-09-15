@@ -40,6 +40,11 @@ function respond(res: import('node:http').ServerResponse, statusCode: number, bo
 	res.writeHead(statusCode, {
 		'content-type': 'application/json; charset=utf-8',
 		'content-length': Buffer.byteLength(payload),
+		'cache-control': 'no-store',
+		'content-security-policy': "default-src 'none'",
+		'cross-origin-resource-policy': 'same-origin',
+		'referrer-policy': 'no-referrer',
+		'x-content-type-options': 'nosniff',
 	});
 	res.end(headOnly ? undefined : payload);
 }
@@ -120,7 +125,10 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 		now: options.now,
 		codexRelayFactory: options.codexRelayFactory,
 	});
-	const server: Server = createServer(createRequestListener(health, service));
+	const server: Server = createServer({ maxHeaderSize: 8 * 1024 }, createRequestListener(health, service));
+	server.headersTimeout = 10_000;
+	server.requestTimeout = 15_000;
+	server.keepAliveTimeout = 5_000;
 
 	try {
 		await new Promise<void>((resolve, reject) => {

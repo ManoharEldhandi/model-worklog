@@ -6,7 +6,7 @@ import { formatSessionEvent } from '../eventPresentation';
 import { describeConnection, interpretHealthJson } from '../supervisorClient';
 
 suite('Extension Test Suite', () => {
-	test('builds the Model Worklog Codex session endpoint', () => {
+	test('builds the Model Logger Codex session endpoint', () => {
 		assert.strictEqual(codexSessionPath(), '/v1/codex-sessions');
 	});
 });
@@ -78,7 +78,10 @@ suite('Evidence bundle API', () => {
 suite('Bundled supervisor runtime', () => {
 	test('resolves a packaged entry point and accepts only loopback startup targets', () => {
 		assert.ok(bundledSupervisorPath('/extensions/model-worklog').endsWith('/dist/supervisor.js'));
-		assert.strictEqual(supervisorEnvironment(new URL('http://127.0.0.1:43199')).MODEL_WORKLOG_SUPERVISOR_PORT, '43199');
+		const environment = supervisorEnvironment(new URL('http://127.0.0.1:43199'), { MODEL_WORKLOG_SUPERVISOR_HOST: '0.0.0.0' });
+		assert.strictEqual(environment.MODEL_WORKLOG_SUPERVISOR_PORT, '43199');
+		assert.strictEqual(environment.MODEL_WORKLOG_SUPERVISOR_HOST, '127.0.0.1');
+		assert.strictEqual(supervisorEnvironment(new URL('http://localhost')).MODEL_WORKLOG_SUPERVISOR_PORT, '43199');
 		assert.throws(() => supervisorEnvironment(new URL('https://example.test:43199')), /loopback HTTP URL/);
 	});
 

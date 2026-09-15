@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+	"baseUrl": ".",
+	"paths": {},
+    "rootDir": "src",
+    "outDir": "out",
+    "noEmit": false,
+	"types": ["node", "vscode", "mocha"]
+  },
+  "include": ["src/**/*.ts"]
+}

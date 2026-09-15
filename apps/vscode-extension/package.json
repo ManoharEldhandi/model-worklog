@@ -1,18 +1,31 @@
 {
   "name": "model-worklog",
-  "displayName": "Model Worklog",
-  "description": "Local AI session logging and review",
+  "publisher": "manohareldhandi",
+  "displayName": "Model Logger",
+  "description": "Local-first, redacted AI activity logging and review",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+  },
+  "homepage": "https://github.com/ManoharEldhandi/model-worklog#readme",
+  "bugs": {
+    "url": "https://github.com/ManoharEldhandi/model-worklog/issues"
   },
   "engines": {
     "vscode": "^1.137.0"
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "AI",
+    "agent",
+    "Codex",
+    "logging",
+    "observability",
+    "privacy"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
@@ -23,50 +36,50 @@
     "commands": [
       {
         "command": "model-worklog.enable",
-        "title": "Enable Model Worklog",
-        "category": "Model Worklog"
+        "title": "Enable Model Logger",
+        "category": "Model Logger"
       },
       {
         "command": "model-worklog.reconnect",
         "title": "Reconnect Local Logger",
-        "category": "Model Worklog"
+        "category": "Model Logger"
       },
       {
         "command": "model-worklog.startCodexSession",
-        "title": "Start Codex Session",
-        "category": "Model Worklog"
+        "title": "Log a Codex Session",
+        "category": "Model Logger"
       },
       {
         "command": "model-worklog.startLoggedCommand",
-        "title": "Start Logged Command",
-        "category": "Model Worklog"
+        "title": "Log a Command",
+        "category": "Model Logger"
       },
       {
         "command": "model-worklog.stopSession",
         "title": "Stop Active Session",
-        "category": "Model Worklog"
+        "category": "Model Logger"
       },
       {
         "command": "model-worklog.refreshSessions",
-        "title": "Refresh Sessions",
-        "category": "Model Worklog"
+        "title": "Refresh Logs",
+        "category": "Model Logger"
       },
       {
         "command": "model-worklog.openSessionLog",
-        "title": "Open Session Log",
-        "category": "Model Worklog"
+        "title": "Open Log",
+        "category": "Model Logger"
       },
       {
         "command": "model-worklog.exportEvidenceBundle",
-        "title": "Export Session Evidence",
-        "category": "Model Worklog"
+        "title": "Export Log",
+        "category": "Model Logger"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "model-worklog",
-          "title": "Model Worklog",
+          "title": "Model Logger",
           "icon": "media/model-worklog.svg"
         }
       ]
@@ -75,17 +88,17 @@
       "model-worklog": [
         {
           "id": "model-worklog.sessions",
-          "name": "Sessions"
+          "name": "Logs"
         }
       ]
     },
     "configuration": {
-      "title": "Model Worklog",
+      "title": "Model Logger",
       "properties": {
         "model-worklog.supervisorUrl": {
           "type": "string",
           "default": "http://127.0.0.1:43199",
-          "description": "Loopback URL for the local Model Worklog supervisor.",
+          "description": "Loopback URL for the local Model Logger supervisor.",
           "scope": "machine"
         },
         "model-worklog.codex.defaultDurationMinutes": {
@@ -109,15 +122,16 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "compile": "npm run build:packages && npm run check-types && npm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
-    "vsix": "npm run package && vsce package --no-dependencies --allow-missing-repository --out model-worklog-0.1.0.vsix",
+    "package": "npm run build:packages && npm run check-types && npm run lint && node esbuild.js --production",
+    "vsix": "npm run package && vsce package --no-dependencies --allow-missing-repository",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "pretest": "npm run build:packages && npm run compile-tests && npm run compile && npm run lint",
+    "build:packages": "npm --prefix ../.. run build",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vscode-test"

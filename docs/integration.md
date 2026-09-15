@@ -1,6 +1,6 @@
 # Integration
 
-Model Worklog accepts normalized events from any AI provider, tool framework, or agent runtime that can call the local SDK. The SDK connects only to a loopback supervisor using a user-local token.
+Model Logger accepts normalized events from any AI provider, tool framework, or agent runtime that can call the local SDK. The SDK connects only to a loopback supervisor using a user-local token.
 
 ## Standalone Setup
 
@@ -10,7 +10,7 @@ model-worklog supervisor start
 model-worklog workspace trust .
 ```
 
-The VS Code extension performs the same startup and workspace registration after **Enable Model Worklog**. Use the CLI for scripts, CI, or custom integrations outside VS Code.
+The VS Code extension performs the same startup and workspace registration after **Enable Model Logger**. Use the CLI for scripts, CI, or custom integrations outside VS Code.
 
 ## Record A Session
 

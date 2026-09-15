@@ -5,10 +5,10 @@ import { cancelSession, getEvidenceBundle, getSessionEventSnapshot, listSessions
 import { describeConnection, type SupervisorConnection } from './supervisorClient';
 import { SupervisorRuntime } from './supervisorRuntime';
 
-class WorklogSessionsView implements vscode.TreeDataProvider<vscode.TreeItem> {
+class LoggerSessionsView implements vscode.TreeDataProvider<vscode.TreeItem> {
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
 	private supervisorLabel = 'not enabled';
-	private supervisorDetail = 'Enable Model Worklog to start or reconnect the local logger.';
+	private supervisorDetail = 'Enable Model Logger to start or reconnect the local logger.';
 	private sessions: readonly SupervisorSession[] = [];
 
 	readonly onDidChangeTreeData = this.changeEmitter.event;
@@ -19,13 +19,13 @@ class WorklogSessionsView implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 	getChildren(): vscode.TreeItem[] {
 		return [
-			this.item(`Model Worklog: ${this.supervisorLabel}`, 'pulse', 'model-worklog.enable', this.supervisorDetail),
-			this.item('Start Codex Session', 'run-all', 'model-worklog.startCodexSession', 'Launch Codex through the bundled local Model Worklog relay.'),
-			this.item('Start Logged Command', 'play', 'model-worklog.startLoggedCommand', 'Record a trusted command with redacted process output and a Git snapshot.'),
+			this.item(`Model Logger: ${this.supervisorLabel}`, 'pulse', 'model-worklog.enable', this.supervisorDetail),
+			this.item('Log a Codex Session', 'run-all', 'model-worklog.startCodexSession', 'Launch Codex through the bundled local logger.'),
+			this.item('Log a Command', 'play', 'model-worklog.startLoggedCommand', 'Record a trusted command with redacted output and a Git snapshot.'),
 			this.item('Stop Active Session', 'debug-stop', 'model-worklog.stopSession', 'Interrupt a running supervisor-managed Codex session.'),
-			this.item('Refresh Sessions', 'refresh', 'model-worklog.refreshSessions'),
+			this.item('Refresh Logs', 'refresh', 'model-worklog.refreshSessions'),
 			...this.sessions.map((session) => this.item(
-				`${session.sessionId.slice(0, 20)} (${session.state}, ${session.eventCount} events, ${formatTokenUsage(session)})`,
+				`${session.sessionId.slice(0, 20)} · ${session.state} · ${session.eventCount} events · ${formatTokenUsage(session)}`,
 				'symbol-event',
 				'model-worklog.openSessionLog',
 				`${session.runMode} session by ${session.actor}`,
@@ -59,8 +59,8 @@ class WorklogSessionsView implements vscode.TreeDataProvider<vscode.TreeItem> {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-	const output = vscode.window.createOutputChannel('Model Worklog');
-	const sessionView = new WorklogSessionsView();
+	const output = vscode.window.createOutputChannel('Model Logger');
+	const sessionView = new LoggerSessionsView();
 	const supervisorRuntime = new SupervisorRuntime({ extensionPath: context.extensionPath });
 
 	context.subscriptions.push(
@@ -94,7 +94,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			const task = await vscode.window.showInputBox({
-				title: 'Start Codex Session',
+				title: 'Log a Codex Session',
 				prompt: 'Task for Codex',
 				ignoreFocusOut: true,
 				validateInput: (value) => value.trim() === '' ? 'Enter a task for Codex.' : value.length > 32_000 ? 'Task must be at most 32,000 characters.' : undefined,
@@ -107,7 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
 					maxDurationMs: configuredCodexDurationMinutes() * 60 * 1_000,
 					maxTokens: configuredCodexTokenBudget(),
 				});
-				vscode.window.showInformationMessage(`Started Codex session ${session.sessionId}.`);
+				vscode.window.showInformationMessage(`Logging Codex session ${session.sessionId}.`);
 				await refreshSessions(sessionView, output);
 				void followSessionLog(url, session.sessionId, sessionView, output).catch((error: unknown) => vscode.window.showWarningMessage(`Could not follow Codex session: ${message(error)}`));
 			} catch (error) {
@@ -123,7 +123,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (workspacePath === undefined || url === undefined) {
 				return;
 			}
-			const input = await vscode.window.showInputBox({ title: 'Start Logged Command', prompt: 'Command as a JSON string array', value: '["npm", "test"]' });
+			const input = await vscode.window.showInputBox({ title: 'Log a Command', prompt: 'Command as a JSON string array', value: '["npm", "test"]' });
 			if (input === undefined) {
 				return;
 			}
@@ -134,7 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			try {
 				const session = await startManagedRun(url, workspacePath, command[0]!, command.slice(1));
-				vscode.window.showInformationMessage(`Started logged command session ${session.sessionId}.`);
+				vscode.window.showInformationMessage(`Logging command session ${session.sessionId}.`);
 				await refreshSessions(sessionView, output);
 				void followSessionLog(url, session.sessionId, sessionView, output).catch((error: unknown) => vscode.window.showWarningMessage(`Could not follow command session: ${message(error)}`));
 			} catch (error) {
@@ -186,11 +186,11 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			try {
 				const sessions = await listSessions(url);
-				const selected = await vscode.window.showQuickPick(sessions.map((session) => ({ label: session.sessionId, description: `${session.state}, ${session.eventCount} events`, session })), { title: 'Export Model Worklog Session', placeHolder: 'Select a retained session' });
+				const selected = await vscode.window.showQuickPick(sessions.map((session) => ({ label: session.sessionId, description: `${session.state}, ${session.eventCount} events`, session })), { title: 'Export Model Logger Log', placeHolder: 'Select a retained log' });
 				if (selected === undefined) {
 					return;
 				}
-				const destination = await vscode.window.showSaveDialog({ title: 'Export Model Worklog session', defaultUri: vscode.Uri.file(`model-worklog-${selected.session.sessionId}.json`), filters: { 'Model Worklog JSON': ['json'] } });
+				const destination = await vscode.window.showSaveDialog({ title: 'Export Model Logger log', defaultUri: vscode.Uri.file(`model-logger-${selected.session.sessionId}.json`), filters: { 'Model Logger JSON': ['json'] } });
 				if (destination === undefined) {
 					return;
 				}
@@ -208,11 +208,11 @@ function requireTrustedWorkspace(): boolean {
 	if (vscode.workspace.isTrusted) {
 		return true;
 	}
-	vscode.window.showWarningMessage('Trust this workspace before starting Model Worklog processes.');
+	vscode.window.showWarningMessage('Trust this workspace before starting Model Logger processes.');
 	return false;
 }
 
-async function enableSupervisor(runtime: SupervisorRuntime, sessionView: WorklogSessionsView, output: vscode.OutputChannel, announce: boolean): Promise<boolean> {
+async function enableSupervisor(runtime: SupervisorRuntime, sessionView: LoggerSessionsView, output: vscode.OutputChannel, announce: boolean): Promise<boolean> {
 	const workspacePath = activeWorkspacePath();
 	const url = configuredSupervisorUrl();
 	if (workspacePath === undefined || url === undefined) {
@@ -229,15 +229,15 @@ async function enableSupervisor(runtime: SupervisorRuntime, sessionView: Worklog
 		await trustWorkspace(url, workspacePath);
 		await refreshSessions(sessionView, output);
 		const location = vscode.env.remoteName === undefined ? 'this computer' : `the ${vscode.env.remoteName} remote environment`;
-		output.appendLine(`Model Worklog is ready on ${location}.`);
+		output.appendLine(`Model Logger is ready on ${location}.`);
 		if (announce) {
-			vscode.window.showInformationMessage(`Model Worklog is enabled on ${location}.`);
+			vscode.window.showInformationMessage(`Model Logger is enabled on ${location}.`);
 		}
 		return true;
 	} catch (error) {
 		const detail = message(error);
 		sessionView.setSupervisor('unavailable', detail);
-		vscode.window.showWarningMessage(`Could not enable Model Worklog: ${detail}`);
+		vscode.window.showWarningMessage(`Could not enable Model Logger: ${detail}`);
 		return false;
 	}
 }
@@ -245,7 +245,7 @@ async function enableSupervisor(runtime: SupervisorRuntime, sessionView: Worklog
 function configuredSupervisorUrl(): URL | undefined {
 	const configuredUrl = vscode.workspace.getConfiguration('model-worklog').get<string>('supervisorUrl');
 	if (!configuredUrl) {
-		vscode.window.showWarningMessage('No local Model Worklog supervisor URL is configured.');
+		vscode.window.showWarningMessage('No local Model Logger supervisor URL is configured.');
 		return undefined;
 	}
 	try {
@@ -254,6 +254,12 @@ function configuredSupervisorUrl(): URL | undefined {
 		if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(host)) {
 			vscode.window.showWarningMessage(`Supervisor URL must be loopback HTTP, received ${url.origin}.`);
 			return undefined;
+		}
+		if (host === 'localhost') {
+			url.hostname = '127.0.0.1';
+		}
+		if (url.port === '') {
+			url.port = '43199';
 		}
 		return url;
 	} catch {
@@ -265,7 +271,7 @@ function configuredSupervisorUrl(): URL | undefined {
 function activeWorkspacePath(): string | undefined {
 	const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 	if (workspacePath === undefined) {
-		vscode.window.showWarningMessage('Open a workspace folder before using Model Worklog.');
+		vscode.window.showWarningMessage('Open a workspace folder before using Model Logger.');
 	}
 	return workspacePath;
 }
@@ -286,7 +292,7 @@ function formatTokenUsage(session: SupervisorSession): string {
 		: `tokens ${session.tokenUsage.reason}`;
 }
 
-async function refreshSessions(sessionView: WorklogSessionsView, output: vscode.OutputChannel): Promise<void> {
+async function refreshSessions(sessionView: LoggerSessionsView, output: vscode.OutputChannel): Promise<void> {
 	const url = configuredSupervisorUrl();
 	if (url === undefined) {
 		return;
@@ -301,10 +307,10 @@ async function refreshSessions(sessionView: WorklogSessionsView, output: vscode.
 	}
 }
 
-async function followSessionLog(url: URL, sessionId: string, sessionView: WorklogSessionsView, output: vscode.OutputChannel): Promise<void> {
+async function followSessionLog(url: URL, sessionId: string, sessionView: LoggerSessionsView, output: vscode.OutputChannel): Promise<void> {
 	let afterSequence = 0;
 	output.clear();
-	output.appendLine(`Model Worklog session ${sessionId}`);
+	output.appendLine(`Model Logger log ${sessionId}`);
 	for (;;) {
 		const snapshot = await getSessionEventSnapshot(url, sessionId, { afterSequence });
 		for (const event of snapshot.events) {
@@ -327,14 +333,14 @@ function reportConnection(connection: SupervisorConnection): void {
 		case 'connected':
 			return;
 		case 'incompatible':
-			vscode.window.showWarningMessage(`Model Worklog supervisor API ${connection.health.apiVersion} is incompatible with this extension.`);
+			vscode.window.showWarningMessage(`Model Logger supervisor API ${connection.health.apiVersion} is incompatible with this extension.`);
 			return;
 		case 'http-error':
 		case 'malformed':
-			vscode.window.showWarningMessage('The local Model Worklog supervisor responded but its health could not be verified.');
+			vscode.window.showWarningMessage('The local Model Logger supervisor responded but its health could not be verified.');
 			return;
 		case 'unreachable':
-			vscode.window.showWarningMessage('Model Worklog supervisor is unavailable.');
+			vscode.window.showWarningMessage('Model Logger supervisor is unavailable.');
 	}
 }
 

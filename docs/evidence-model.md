@@ -1,6 +1,6 @@
 # Evidence
 
-Model Worklog stores structured JSON internally and renders it as readable session text in VS Code and the CLI. Every retained event has a supervisor-assigned sequence, timestamp, source actor, event kind, evidence grade, redaction metadata, and JSON payload.
+Model Logger stores structured JSON internally and renders it as readable session text in VS Code and the CLI. Every retained event has a supervisor-assigned sequence, timestamp, source actor, event kind, evidence grade, redaction metadata, and JSON payload.
 
 ## Evidence Grades
 
@@ -9,7 +9,7 @@ Model Worklog stores structured JSON internally and renders it as readable sessi
 | `observed-native` | A supported vendor interface directly emitted the fact to the supervisor relay. |
 | `observed-boundary` | The supervisor observed a local process, command, output stream, filesystem effect, or Git snapshot. |
 | `computed` | The supervisor deterministically derived session lifecycle metadata. |
-| `model-declared` | An external SDK or adapter reported the fact; Model Worklog did not independently observe it. |
+| `model-declared` | An external SDK or adapter reported the fact; Model Logger did not independently observe it. |
 | `unknown` | The integration lacks the fact, it was redacted, truncated, malformed, or unsupported. |
 
 Grades describe provenance, not usefulness. A client declaration is never promoted to native or boundary observation.

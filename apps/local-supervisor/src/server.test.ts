@@ -66,6 +66,9 @@ test('binds to an ephemeral loopback port and serves valid health', async () => 
 	const response = await fetch(new URL('/health', supervisor.url));
 	assert.equal(response.status, 200);
 	assert.match(response.headers.get('content-type') ?? '', /application\/json/);
+	assert.equal(response.headers.get('cache-control'), 'no-store');
+	assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+	assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
 
 	const parsed = parseHealthResponse(await response.json());
 	assert.equal(parsed.ok, true);

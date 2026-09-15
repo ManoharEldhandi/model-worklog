@@ -204,7 +204,7 @@ export class CodexAppServerRelay {
 				});
 			});
 
-			await this.request('initialize', { clientInfo: { name: 'model-worklog', title: 'Model Worklog', version: '0.1.0' } });
+			await this.request('initialize', { clientInfo: { name: 'model-worklog', title: 'Model Logger', version: '0.1.0' } });
 			this.send({ method: 'initialized', params: {} });
 			const started = asRecord(await this.request('thread/start', {
 				cwd: this.options.workspacePath,
@@ -356,7 +356,7 @@ export class CodexAppServerRelay {
 			return;
 		}
 		await this.sink.append({ kind: 'adapter.lifecycle', actor: 'codex-app-server', evidenceGrade: 'unknown', unknownReason: 'unsupported-capability', payload: { adapter: 'codex-app-server', method, message: 'This logger does not mediate App Server control requests.' } });
-		this.send({ id: message.id, error: { code: -32601, message: 'Model Worklog is an observation logger and does not handle this App Server request.' } });
+		this.send({ id: message.id, error: { code: -32601, message: 'Model Logger records observable activity and does not handle this App Server request.' } });
 	}
 
 	private request(method: string, params: JsonObject): Promise<unknown> {

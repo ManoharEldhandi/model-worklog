@@ -1,4 +1,5 @@
 const esbuild = require("esbuild");
+const path = require("node:path");
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -38,6 +39,10 @@ async function main() {
 		outdir: 'dist',
 		entryNames: '[name]',
 		external: ['vscode'],
+		alias: {
+			'model-worklog-schema': path.resolve(__dirname, '../../packages/event-schema/src/index.ts'),
+			'model-worklog-sdk': path.resolve(__dirname, '../../packages/adapter-sdk/src/index.ts'),
+		},
 		logLevel: 'silent',
 		plugins: [
 			/* add to the end of plugins array */
