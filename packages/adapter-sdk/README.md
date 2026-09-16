@@ -17,4 +17,4 @@ exports `formatSessionEventText(event)` for a ready-to-use text block. Keep the
 local supervisor credential in backend code; forward selected redacted events to
 browser clients through your own authenticated application channel.
 
-Never submit private chain-of-thought, credentials, or unobserved activity. See the [integration guide](https://github.com/ManoharEldhandi/model-worklog/blob/main/docs/integration.md) for a complete TypeScript example and provider usage mappings. Use is subject to the included license.
+Never submit private chain-of-thought, credentials, or unobserved activity. See the [integration guide](https://github.com/ManoharEldhandi/model-worklog/blob/main/docs/integration.md) for a complete TypeScript example and provider usage mappings. Licensed under MIT.

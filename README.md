@@ -123,16 +123,8 @@ npm run extension:test
 
 ## License And Contributions
 
-Model Logger is source-available proprietary software, not open source. The
-[Model Logger Package License](LICENSE) permits installation and use of
-official npm packages and VSIX releases, but restricts copying, modification,
-and redistribution of the source. Contributions are welcome solely through
-the limited contribution permission in the license and require the
-[Contributor License Agreement](CLA.md).
-
-This custom license and CLA have not been jurisdiction-reviewed. Have a
-qualified lawyer review them before a public release, especially if you need
-consumer, enterprise, or country-specific terms.
+Model Logger is open source under the [MIT License](LICENSE). Contributions are
+welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for local validation steps.
 
 See the [security model](docs/security-model.md) for protections, operating
 requirements, and limitations.

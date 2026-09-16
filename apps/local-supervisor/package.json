@@ -2,7 +2,7 @@
   "name": "model-worklog-supervisor",
   "version": "0.1.0",
   "description": "Local runtime for durable Model Logger sessions",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/ManoharEldhandi/model-worklog.git"

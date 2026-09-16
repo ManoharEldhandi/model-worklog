@@ -2,7 +2,7 @@
   "name": "model-worklog-sdk",
   "version": "0.1.0",
   "description": "Local integration client for Model Logger evidence sessions",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/ManoharEldhandi/model-worklog.git"

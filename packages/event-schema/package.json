@@ -2,7 +2,7 @@
   "name": "model-worklog-schema",
   "version": "0.1.0",
   "description": "Versioned session events for Model Logger",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/ManoharEldhandi/model-worklog.git"

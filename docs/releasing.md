@@ -7,12 +7,10 @@ identifier remain `model-worklog` for compatibility.
 
 ## Preconditions
 
-1. Have qualified counsel review `LICENSE` and `CLA.md`. The included
-   license permits use of official packages but is not a standard open-source
-   license.
-2. Decide whether the GitHub repository may remain public. A public repository
-   makes its source downloadable; the license restricts use legally, but it
-   cannot make readable JavaScript or public source technically secret.
+1. Confirm that the root and all package `LICENSE` files contain the MIT License
+   and that all package manifests declare `"license": "MIT"`.
+2. Confirm that the GitHub repository is public and that its README, issue
+   templates, and release notes accurately describe the open-source project.
 3. Ensure the npm names `model-worklog-schema`, `model-worklog-sdk`,
    `model-worklog-supervisor`, and `model-worklog` are available to your
    npm account or organization.
