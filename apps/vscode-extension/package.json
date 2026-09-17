@@ -3,7 +3,7 @@
   "publisher": "manohareldhandi",
   "displayName": "Model Logger",
   "description": "Local-first, redacted AI activity logging and review",
-  "version": "0.1.0",
+  "version": "0.1.14",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -55,8 +55,18 @@
         "category": "Model Logger"
       },
       {
-        "command": "model-worklog.startLoggedCommand",
-        "title": "Log a Command",
+        "command": "model-worklog.startCopilotSession",
+        "title": "Log a Copilot CLI Task",
+        "category": "Model Logger"
+      },
+      {
+        "command": "model-worklog.startCopilotInteractiveSession",
+        "title": "Start Interactive Copilot CLI",
+        "category": "Model Logger"
+      },
+      {
+        "command": "model-worklog.stopLiveLog",
+        "title": "Stop Live Log",
         "category": "Model Logger"
       },
       {
@@ -134,6 +144,14 @@
           "minimum": 1,
           "maximum": 2000000,
           "description": "Maximum reported token budget for a supervisor-managed Codex session.",
+          "scope": "machine"
+        },
+        "model-worklog.copilot.defaultDurationMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 240,
+          "description": "Maximum duration for a supervisor-managed Copilot CLI session.",
           "scope": "machine"
         }
       }

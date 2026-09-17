@@ -17,9 +17,10 @@ identifier remain `model-worklog` for compatibility.
 4. Create or confirm the VS Code Marketplace publisher named
    `manohareldhandi`. If the account uses another publisher ID, change
    `apps/vscode-extension/package.json` before publishing.
-5. Enable npm two-factor authentication and configure npm Trusted Publishing
-   for this GitHub repository before using provenance. Use a granular,
-   short-lived token only if Trusted Publishing is unavailable.
+5. Enable npm two-factor authentication. Configure npm Trusted Publishing for
+   this GitHub repository when publishing from CI with provenance. For a manual
+   local publish, log in with an account that owns the package names and use a
+   granular, short-lived token only if npm requires one.
 6. Create a VS Code Marketplace publishing token, store it only as a secret,
    and never commit it. Do not print npm, Marketplace, or GitHub tokens in CI
    logs.
@@ -36,15 +37,33 @@ npm --prefix apps/vscode-extension audit --omit=dev
 
 Review release notes and set the same new version in the root manifest, all
 four npm package manifests, and `apps/vscode-extension/package.json`. Run
-`npm run release:versions` before publishing.
+`npm run release:versions` before publishing. Commit and push the reviewed
+release source before publishing artifacts:
+
+```sh
+git add -A
+git commit -m "feat: describe the release"
+git push origin main
+```
 
 Publish from a clean, reviewed Git commit in dependency order:
 
 ```sh
+# Trusted CI only: include provenance when npm has an OIDC trusted publisher.
 npm publish --workspace model-worklog-schema --access public --provenance
 npm publish --workspace model-worklog-sdk --access public --provenance
 npm publish --workspace model-worklog-supervisor --access public --provenance
 npm publish --workspace model-worklog --access public --provenance
+```
+
+For a manual local publish, omit `--provenance`:
+
+```sh
+npm login
+npm publish --workspace model-worklog-schema --access public
+npm publish --workspace model-worklog-sdk --access public
+npm publish --workspace model-worklog-supervisor --access public
+npm publish --workspace model-worklog --access public
 ```
 
 Then publish the extension after its VSIX has passed validation:
@@ -54,7 +73,7 @@ cd apps/vscode-extension
 npx vsce publish -p "$VSCE_PAT"
 ```
 
-Create a Git tag such as `v0.1.0`, push it, and attach `apps/vscode-extension/model-worklog-<version>.vsix` to the GitHub release for direct offline installation.
+Create a Git tag such as `v<version>`, push it, and attach `apps/vscode-extension/model-worklog-<version>.vsix` to the GitHub release for direct offline installation.
 
 Immediately after publishing, install the exact npm package into a new
 temporary project, install the VSIX into a test VS Code profile, and confirm

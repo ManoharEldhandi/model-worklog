@@ -39,7 +39,9 @@ test('presents readable reasoning summaries, tools, files, and tool results', ()
 
 test('presents file and workspace activity without rendering a raw diff into text', () => {
 	const read = presentSessionEvent(event('file.read', { path: 'src/parser.ts', tool: 'read_file' }));
-	assert.equal(read.title, 'Read file: src/parser.ts');
+	assert.equal(read.title, 'Read path: src/parser.ts');
+	const directory = presentSessionEvent(event('file.read', { path: 'docs', tool: 'Read', pathType: 'directory' }));
+	assert.equal(directory.title, 'Inspected directory: docs');
 
 	const change = presentSessionEvent(event('workspace.diff', {
 		changedSinceStart: true,

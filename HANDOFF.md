@@ -42,15 +42,19 @@ The extension remains a client of the supervisor. Durable evidence, redaction, a
 - Durable JSON/JSONL sessions with redacted events, resumable filtered reads, bounded process output, Git snapshots, token usage, deterministic costs, and integrity-checked exports.
 - Managed command logging with supervisor-owned cancellation. Running children receive `SIGTERM`, then `SIGKILL` after a short grace period when required.
 - Direct Codex App Server logging with visible messages, summaries, tool activity, command activity, files, usage, time and token limits, and cancellation.
-- Generic SDK client plus Claude hook and Codex event mappers for cooperative integrations.
+- Direct GitHub Copilot CLI logging through its documented JSON event stream and metadata-only OpenTelemetry usage export. It records visible messages, tool activity, results, errors, and reported usage while excluding raw reasoning.
+- Tracked interactive GitHub Copilot CLI logging through a VS Code terminal launcher. It records hook-supplied activity and final documented metadata-only OpenTelemetry usage after the CLI exits.
+- A dedicated user-level Copilot CLI hook is installed while Logger is enabled. It forwards normal future Copilot CLI session prompts, tool activity/results, errors, and lifecycle to the supervisor as `model-declared` evidence, then is removed after the final extension client releases its lease.
+- Generic SDK client plus Claude hook, Codex, and Copilot CLI event mappers for cooperative integrations.
 - CLI and native VS Code log views for starting, reviewing, exporting, and deleting logs. VS Code lists sessions in the Model Logger sidebar and renders one selected session in the bottom Model Logger panel without taking editor focus. The selected view updates while the session runs and shows token totals when the connected AI reports them.
 - Logs use a redacted task name from the Codex prompt, managed command, SDK `title`, or first recorded user request. The bottom view renders only sections that contain activity and puts visible assistant output in **Agent Response**.
 - SDK `followEvents()` lets any Node application backend forward committed redacted session events to a terminal, desktop UI, or authenticated website channel.
 
 ## Product Limits
 
-- Codex is the only direct-launch adapter. Other agents must integrate through the SDK or their documented hook surface and remain `model-declared`.
+- Codex App Server and GitHub Copilot CLI are direct-launch adapters. Other agents must integrate through the SDK or their documented hook surface and remain `model-declared`.
 - Managed command logging observes the process boundary and workspace effects; it cannot discover tools used inside arbitrary child processes.
+- VS Code does not passively capture Copilot Chat, arbitrary terminal activity, or filesystem changes as agent evidence. The Copilot CLI personal hook is the automatic supported CLI capture path; use the tracked interactive launcher when a normal Copilot CLI session also needs token usage, or use a documented adapter or SDK integration for other agent surfaces.
 - Redaction is defense in depth, not a guarantee that every credential or sensitive-data format is recognized.
 - The evidence manifest detects modification but is not a signature or authorship proof.
 

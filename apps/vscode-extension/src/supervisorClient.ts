@@ -40,6 +40,13 @@ export function describeConnection(connection: SupervisorConnection): { label: s
 	}
 }
 
+export function missingSupervisorFeatures(connection: SupervisorConnection, requiredFeatures: readonly string[]): readonly string[] {
+	if (connection.kind !== 'connected') {
+		return [...requiredFeatures];
+	}
+	return requiredFeatures.filter((feature) => !connection.health.capabilities.features.includes(feature));
+}
+
 export type FetchLike = (input: URL, init?: { signal?: AbortSignal }) => Promise<Response>;
 
 /** Fetches and interprets supervisor health from a validated loopback URL. */

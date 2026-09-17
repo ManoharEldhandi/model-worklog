@@ -35,6 +35,11 @@ export interface CodexSessionOptions {
 	readonly maxTokens: number;
 }
 
+export interface CopilotSessionOptions {
+	readonly model?: string;
+	readonly maxDurationMs: number;
+}
+
 interface ApiErrorBody {
 	readonly error?: { readonly message?: string };
 }
@@ -86,14 +91,23 @@ export async function trustWorkspace(baseUrl: URL, workspacePath: string): Promi
 	await request(baseUrl, '/v1/workspaces/trust', 'POST', { workspacePath });
 }
 
-export async function startManagedRun(baseUrl: URL, workspacePath: string, executable: string, args: readonly string[]): Promise<SupervisorSession> {
-	const result = await request<{ session?: SupervisorSession }>(baseUrl, '/v1/runs', 'POST', {
-		workspacePath, executable, args, actor: 'vscode-managed-command',
-	});
-	if (result.session === undefined) {
-		throw new Error('The local supervisor returned malformed run data.');
+export function extensionClientPath(clientId?: string): string {
+	return clientId === undefined ? '/v1/extension-clients' : `/v1/extension-clients/${encodeURIComponent(clientId)}`;
+}
+
+export async function registerExtensionClient(baseUrl: URL, clientId: string): Promise<void> {
+	const result = await request<{ registered?: unknown; clientId?: unknown }>(baseUrl, extensionClientPath(), 'POST', { clientId });
+	if (result.registered !== true || result.clientId !== clientId) {
+		throw new Error('The local supervisor returned malformed extension client data.');
 	}
-	return result.session;
+}
+
+export async function releaseExtensionClient(baseUrl: URL, clientId: string): Promise<number> {
+	const result = await request<{ released?: unknown; clientId?: unknown; activeClients?: unknown }>(baseUrl, extensionClientPath(clientId), 'DELETE');
+	if (result.released !== true || result.clientId !== clientId || typeof result.activeClients !== 'number' || !Number.isInteger(result.activeClients) || result.activeClients < 0) {
+		throw new Error('The local supervisor returned malformed extension client release data.');
+	}
+	return result.activeClients;
 }
 
 export function codexSessionPath(): string {
@@ -104,6 +118,30 @@ export async function startCodexSession(baseUrl: URL, workspacePath: string, tas
 	const result = await request<{ session?: SupervisorSession }>(baseUrl, codexSessionPath(), 'POST', { workspacePath, task, ...options });
 	if (result.session === undefined) {
 		throw new Error('The local supervisor returned malformed Codex session data.');
+	}
+	return result.session;
+}
+
+export function copilotSessionPath(): string {
+	return '/v1/copilot-sessions';
+}
+
+export async function startCopilotSession(baseUrl: URL, workspacePath: string, task: string, options: CopilotSessionOptions): Promise<SupervisorSession> {
+	const result = await request<{ session?: SupervisorSession }>(baseUrl, copilotSessionPath(), 'POST', { workspacePath, task, ...options });
+	if (result.session === undefined) {
+		throw new Error('The local supervisor returned malformed Copilot session data.');
+	}
+	return result.session;
+}
+
+export function copilotInteractiveSessionPath(): string {
+	return '/v1/copilot-interactive-sessions';
+}
+
+export async function startCopilotInteractiveSession(baseUrl: URL, workspacePath: string, vendorSessionId: string): Promise<SupervisorSession> {
+	const result = await request<{ session?: SupervisorSession }>(baseUrl, copilotInteractiveSessionPath(), 'POST', { workspacePath, vendorSessionId });
+	if (result.session === undefined) {
+		throw new Error('The local supervisor returned malformed interactive Copilot session data.');
 	}
 	return result.session;
 }
@@ -169,14 +207,4 @@ export async function getSessionEventSnapshot(baseUrl: URL, sessionId: string, q
 		throw new Error('The local supervisor returned malformed event cursor data.');
 	}
 	return { events: result.events as SessionEvent[], cursor: { afterSequence: cursor.afterSequence, nextSequence: cursor.nextSequence }, terminal: result.terminal };
-}
-
-/** Parses an explicit argument vector; commands are never passed to a shell. */
-export function parseCommandArray(value: string): readonly string[] | undefined {
-	try {
-		const parsed: unknown = JSON.parse(value);
-		return Array.isArray(parsed) && parsed.length > 0 && parsed.every((entry) => typeof entry === 'string' && entry.trim() !== '') ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
 }

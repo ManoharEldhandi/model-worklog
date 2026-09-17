@@ -11,7 +11,7 @@ const DETAILS_CONTAINER_COMMAND = 'workbench.view.extension.model-worklog-detail
 
 type WebviewMessage = { readonly type: 'render'; readonly model?: LogDetailModel };
 
-function html(): string {
+export function logDetailsHtml(): string {
 	const nonce = randomUUID();
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -33,6 +33,9 @@ function html(): string {
   .entry:first-of-type { border-top: 0; }
   .label { font-size: 12px; font-weight: 600; }
   pre { margin: 4px 0 0; color: var(--vscode-editor-foreground); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.45; }
+  pre.preview { max-height: 2.9em; overflow: hidden; }
+  .expand { margin: 4px 0 0; padding: 0; border: 0; color: var(--vscode-textLink-foreground); background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+  .expand:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
   .empty { color: var(--vscode-descriptionForeground); font-size: 12px; }
   #blank { margin: 24px 0; color: var(--vscode-descriptionForeground); }
 </style>
@@ -45,7 +48,16 @@ function html(): string {
   const title = document.getElementById('title');
   const meta = document.getElementById('meta');
   const content = document.getElementById('content');
-  function entry(value) {
+  const persisted = vscode.getState() || {};
+  let selectedSessionId = persisted.sessionId;
+  const expandedEntries = new Set(Array.isArray(persisted.expandedEntries) ? persisted.expandedEntries : []);
+  function persistExpandedEntries() {
+    vscode.setState({ sessionId: selectedSessionId, expandedEntries: [...expandedEntries] });
+  }
+  function needsExpansion(value) {
+    return value.length > 240 || value.split(/\\r?\\n/).length > 2;
+  }
+  function entry(value, entryId) {
     const element = document.createElement('div');
     element.className = 'entry' + (value.content ? '' : ' empty');
     const label = document.createElement('div');
@@ -55,13 +67,34 @@ function html(): string {
     if (value.content) {
       const body = document.createElement('pre');
       body.textContent = value.content;
+      const expandable = needsExpansion(value.content);
+      if (expandable && !expandedEntries.has(entryId)) body.className = 'preview';
       element.append(body);
+      if (expandable) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'expand';
+        const expanded = expandedEntries.has(entryId);
+        toggle.textContent = expanded ? 'Show less' : 'Show more';
+        toggle.setAttribute('aria-expanded', String(expanded));
+        toggle.addEventListener('click', () => {
+          const isExpanded = body.classList.toggle('preview') === false;
+          if (isExpanded) expandedEntries.add(entryId); else expandedEntries.delete(entryId);
+          toggle.textContent = isExpanded ? 'Show less' : 'Show more';
+          toggle.setAttribute('aria-expanded', String(isExpanded));
+          persistExpandedEntries();
+        });
+        element.append(toggle);
+      }
     }
     return element;
   }
   function render(model) {
     content.replaceChildren();
     if (!model) {
+      selectedSessionId = undefined;
+      expandedEntries.clear();
+      persistExpandedEntries();
       title.textContent = 'Model Logger';
       meta.textContent = 'Choose View Log from a saved log.';
       const blank = document.createElement('p');
@@ -70,6 +103,11 @@ function html(): string {
       content.append(blank);
       return;
     }
+    if (selectedSessionId !== model.sessionId) {
+      selectedSessionId = model.sessionId;
+      expandedEntries.clear();
+      persistExpandedEntries();
+    }
     title.textContent = model.title;
     meta.textContent = (model.status === 'live' ? 'Live' : model.status.charAt(0).toUpperCase() + model.status.slice(1)) + ' | ' + model.updateCount + (model.updateCount === 1 ? ' update' : ' updates') + ' | ' + model.sessionId;
     for (const section of model.sections) {
@@ -77,7 +115,7 @@ function html(): string {
       const heading = document.createElement('h2');
       heading.textContent = section.title;
       area.append(heading);
-      for (const item of section.entries) area.append(entry(item));
+      section.entries.forEach((item, index) => area.append(entry(item, model.sessionId + ':' + section.title + ':' + index + ':' + item.label)));
       content.append(area);
     }
   }
@@ -116,7 +154,7 @@ export class LogDetailsView implements vscode.WebviewViewProvider {
       this.ready = true;
       void this.post();
     });
-		view.webview.html = html();
+    view.webview.html = logDetailsHtml();
 	}
 
 	async select(session: SupervisorSession): Promise<void> {

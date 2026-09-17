@@ -75,7 +75,7 @@ function presentationFor(payload: JsonObject, kind: SessionEvent['kind']): Timel
 		case 'instruction.loaded':
 			return { title: `Loaded instructions: ${text(payload.path) ?? 'source unavailable'}`, details: details(detail('Adapter', text(payload.adapter)), detail('Type', text(payload.memoryType)), detail('Reason', text(payload.loadReason)), detail('Triggered by', text(payload.triggerPath))) };
 		case 'tool.called':
-			return { title: `Tool started: ${text(payload.tool) ?? 'unnamed tool'}`, details: details(detail('Target file', toolPath(payload)), detail('Arguments', payload.arguments)) };
+			return { title: `Tool started: ${text(payload.tool) ?? 'unnamed tool'}`, details: details(detail('Target path', toolPath(payload)), detail('Arguments', payload.arguments)) };
 		case 'tool.completed':
 			return {
 				title: `${payload.success === true ? 'Tool completed' : 'Tool failed'}: ${text(payload.tool) ?? 'unnamed tool'}`,
@@ -86,9 +86,17 @@ function presentationFor(payload: JsonObject, kind: SessionEvent['kind']): Timel
 		case 'command.completed':
 			return { title: `Agent command ${payload.exitCode === 0 ? 'passed' : 'finished'}: ${command(payload) ?? 'command unavailable'}`, details: details(detail('Exit code', payload.exitCode), detail('Duration', duration(payload))) };
 		case 'file.read':
-			return { title: `Read file: ${text(payload.path) ?? 'path unavailable'}`, details: details(detail('Tool', text(payload.tool))) };
+			return {
+				title: `${text(payload.pathType) === 'directory' ? 'Inspected directory' : text(payload.pathType) === 'file' ? 'Read file' : 'Read path'}: ${text(payload.path) ?? 'path unavailable'}`,
+				details: details(detail('Tool', text(payload.tool))),
+			};
 		case 'file.changed':
 			return { title: `${humanize(text(payload.operation) ?? 'changed')} file: ${text(payload.path) ?? 'path unavailable'}`, details: [] };
+		case 'workspace.changed':
+			return {
+				title: `Workspace watcher reported ${text(payload.eventType) ?? 'a change'}: ${text(payload.path) ?? 'path unavailable'}`,
+				details: details(detail('Details', text(payload.message))),
+			};
 		case 'workspace.diff': {
 			const current = record(payload.current);
 			const paths = values(current?.paths);

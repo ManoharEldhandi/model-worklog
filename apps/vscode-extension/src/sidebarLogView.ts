@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { presentSession } from './sessionPresentation';
 import type { SupervisorSession } from './supervisorApi';
 
-export type SidebarLogAction = 'enable' | 'disable' | 'start-codex' | 'start-command' | 'view-log' | 'download-json' | 'delete-log';
+export type SidebarLogAction = 'enable' | 'disable' | 'start-codex' | 'start-copilot' | 'start-copilot-interactive' | 'stop-log' | 'view-log' | 'download-json' | 'delete-log';
 
 export interface SessionSidebarItem {
 	readonly kind: 'session';
@@ -27,7 +27,7 @@ export class SidebarLogView implements vscode.TreeDataProvider<SidebarLogItem>, 
 	};
 	private loggerEnabled = false;
 	private loggerLabel = 'disabled';
-	private loggerDetail = 'Enable Logger to view or record activity in this workspace.';
+	private loggerDetail = 'Enable Logger to view activity from supported AI integrations in this workspace.';
 
 	readonly onDidChangeTreeData: vscode.Event<SidebarLogItem | undefined> = this.changeEmitter.event;
 
@@ -58,7 +58,7 @@ export class SidebarLogView implements vscode.TreeDataProvider<SidebarLogItem>, 
 					return this.item('Log no longer available', 'error', vscode.TreeItemCollapsibleState.None);
 				}
 				const presentation = presentSession(session);
-				return this.item(presentation.title, presentation.icon, vscode.TreeItemCollapsibleState.Collapsed, undefined, presentation.tooltip, presentation.description);
+				return this.item(presentation.title, presentation.icon, vscode.TreeItemCollapsibleState.Collapsed, 'model-worklog.openSessionLog', presentation.tooltip, presentation.description, [item.sessionId]);
 			}
 		}
 	}
@@ -70,7 +70,8 @@ export class SidebarLogView implements vscode.TreeDataProvider<SidebarLogItem>, 
 					{ kind: 'connection' },
 					{ kind: 'action', action: 'disable' },
 					{ kind: 'action', action: 'start-codex' },
-					{ kind: 'action', action: 'start-command' },
+					{ kind: 'action', action: 'start-copilot' },
+					{ kind: 'action', action: 'start-copilot-interactive' },
 					this.groupItems.live,
 					this.groupItems.previous,
 				]
@@ -85,6 +86,7 @@ export class SidebarLogView implements vscode.TreeDataProvider<SidebarLogItem>, 
 				return [];
 			}
 			return [
+				...(session.state === 'running' ? [{ kind: 'action' as const, action: 'stop-log' as const, sessionId: item.sessionId }] : []),
 				{ kind: 'action', action: 'view-log', sessionId: item.sessionId },
 				{ kind: 'action', action: 'download-json', sessionId: item.sessionId },
 				...(session.state === 'running' ? [] : [{ kind: 'action' as const, action: 'delete-log' as const, sessionId: item.sessionId }]),
@@ -112,9 +114,10 @@ export class SidebarLogView implements vscode.TreeDataProvider<SidebarLogItem>, 
 	}
 
 	setSessions(sessions: readonly SupervisorSession[]): void {
-		const changed = !sameSessions(this.sessions, sessions);
+		const visibleSessions = sessions.filter((session) => session.actor !== 'workspace-observer' && session.actor !== 'vscode-terminal');
+		const changed = !sameSessions(this.sessions, visibleSessions);
 		this.sessions.clear();
-		for (const session of sessions) {
+		for (const session of visibleSessions) {
 			this.sessions.set(session.sessionId, session);
 		}
 		for (const sessionId of this.sessionItems.keys()) {
@@ -151,9 +154,11 @@ export class SidebarLogView implements vscode.TreeDataProvider<SidebarLogItem>, 
 	private actionItem(action: Extract<SidebarLogItem, { readonly kind: 'action' }>): vscode.TreeItem {
 		const actions: Record<SidebarLogAction, { readonly label: string; readonly icon: string; readonly command: string; readonly tooltip: string }> = {
 			enable: { label: 'Enable Logger', icon: 'play', command: 'model-worklog.enable', tooltip: 'Connect this VS Code window to the local Logger.' },
-			disable: { label: 'Disable Logger', icon: 'debug-disconnect', command: 'model-worklog.disable', tooltip: 'Disconnect this VS Code window from Logger. Active sessions continue safely.' },
+			disable: { label: 'Disable Logger', icon: 'debug-disconnect', command: 'model-worklog.disable', tooltip: 'Stop agent logging in this VS Code window. Active agent sessions continue safely.' },
 			'start-codex': { label: 'Log a Codex Task', icon: 'run-all', command: 'model-worklog.startCodexSession', tooltip: 'Launch Codex with Logger activity tracking.' },
-			'start-command': { label: 'Log a Command', icon: 'terminal', command: 'model-worklog.startLoggedCommand', tooltip: 'Record activity from one trusted command.' },
+			'start-copilot': { label: 'Log a Copilot CLI Task', icon: 'hubot', command: 'model-worklog.startCopilotSession', tooltip: 'Launch Copilot CLI with documented agent-event and token logging.' },
+			'start-copilot-interactive': { label: 'Start Interactive Copilot CLI', icon: 'terminal', command: 'model-worklog.startCopilotInteractiveSession', tooltip: 'Open an interactive Copilot CLI terminal with activity and final token logging.' },
+			'stop-log': { label: 'Stop Log', icon: 'debug-stop', command: 'model-worklog.stopLiveLog', tooltip: 'Stop recording this live log. Logger-managed tasks are interrupted; interactive Copilot CLI sessions continue without recording.' },
 			'view-log': { label: 'View Log', icon: 'list-tree', command: 'model-worklog.openSessionLog', tooltip: 'Show this log in the bottom Logger panel.' },
 			'download-json': { label: 'Download JSON', icon: 'export', command: 'model-worklog.exportEvidenceBundle', tooltip: 'Download this log as redacted JSON.' },
 			'delete-log': { label: 'Delete Log', icon: 'trash', command: 'model-worklog.deleteSession', tooltip: 'Permanently delete this finished log.' },

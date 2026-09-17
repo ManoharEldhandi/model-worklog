@@ -10,6 +10,7 @@ import { parseHealthResponse } from 'model-worklog-schema';
 
 import { startSupervisor, type RunningSupervisor, type StartOptions } from './server';
 import type { CodexRelayFactory } from './codexRelay';
+import type { CopilotRelayFactory } from './copilotRelay';
 
 const running: RunningSupervisor[] = [];
 const temporaryDirectories: string[] = [];
@@ -21,7 +22,7 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 	return directory;
 }
 
-async function start(options: Pick<StartOptions, 'codexRelayFactory'> = {}): Promise<RunningSupervisor> {
+async function start(options: Pick<StartOptions, 'codexRelayFactory' | 'copilotRelayFactory' | 'shutdownWhenNoExtensionClients'> = {}): Promise<RunningSupervisor> {
 	const supervisor = await startSupervisor({
 		version: '0.1.0', host: '127.0.0.1', port: 0, dataDirectory: await temporaryDirectory('model-worklog-supervisor-'), authToken: 'test-token', ...options,
 	});
@@ -67,6 +68,18 @@ async function waitForFile(path: string): Promise<void> {
 		await new Promise<void>((resolve) => setTimeout(resolve, 10));
 	}
 	throw new Error(`process did not create ${path}`);
+}
+
+async function waitForSupervisorStop(supervisor: RunningSupervisor): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		try {
+			await fetch(new URL('/health', supervisor.url), { signal: AbortSignal.timeout(50) });
+		} catch {
+			return;
+		}
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error('supervisor did not stop after the final extension client released');
 }
 
 async function git(workspacePath: string, args: readonly string[]): Promise<void> {
@@ -144,6 +157,47 @@ test('requires authentication and explicit trust before a managed command can ru
 	assert.equal(trusted.status, 200);
 	const beforeRun = await api(supervisor, '/v1/sessions');
 	assert.deepEqual((await beforeRun.json() as { sessions: unknown[] }).sessions, []);
+});
+
+test('keeps an extension-managed supervisor alive until its final extension client releases', async () => {
+	const supervisor = await start({ shutdownWhenNoExtensionClients: true });
+	const first = await api(supervisor, '/v1/extension-clients', 'POST', { clientId: 'vscode_window_one' });
+	assert.equal(first.status, 200);
+	assert.equal((await first.json() as { activeClients: number }).activeClients, 1);
+	const second = await api(supervisor, '/v1/extension-clients', 'POST', { clientId: 'vscode_window_two' });
+	assert.equal(second.status, 200);
+	assert.equal((await second.json() as { activeClients: number }).activeClients, 2);
+
+	const releasedFirst = await api(supervisor, '/v1/extension-clients/vscode_window_one', 'DELETE');
+	assert.equal(releasedFirst.status, 200);
+	assert.equal((await releasedFirst.json() as { activeClients: number }).activeClients, 1);
+	assert.equal((await fetch(new URL('/health', supervisor.url))).status, 200);
+	const releasedSecond = await api(supervisor, '/v1/extension-clients/vscode_window_two', 'DELETE');
+	assert.equal(releasedSecond.status, 200);
+	await waitForSupervisorStop(supervisor);
+});
+
+test('does not stop a CLI-managed supervisor after an extension client releases', async () => {
+	const supervisor = await start();
+	await api(supervisor, '/v1/extension-clients', 'POST', { clientId: 'vscode_window' });
+	const released = await api(supervisor, '/v1/extension-clients/vscode_window', 'DELETE');
+	assert.equal(released.status, 200);
+	assert.equal((await fetch(new URL('/health', supervisor.url))).status, 200);
+});
+
+test('waits for live evidence to complete before stopping an extension-managed supervisor', async () => {
+	const supervisor = await start({ shutdownWhenNoExtensionClients: true });
+	const workspacePath = await temporaryDirectory('model-worklog-idle-shutdown-workspace-');
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath });
+	await api(supervisor, '/v1/extension-clients', 'POST', { clientId: 'vscode_window' });
+	const created = await api(supervisor, '/v1/sessions', 'POST', { workspacePath, actor: 'active-agent', runMode: 'observe' });
+	const sessionId = (await created.json() as { session: { sessionId: string } }).session.sessionId;
+
+	await api(supervisor, '/v1/extension-clients/vscode_window', 'DELETE');
+	await new Promise<void>((resolve) => setTimeout(resolve, 20));
+	assert.equal((await fetch(new URL('/health', supervisor.url))).status, 200);
+	await api(supervisor, `/v1/sessions/${sessionId}/complete`, 'POST', {});
+	await waitForSupervisorStop(supervisor);
 });
 
 	test('captures a trusted process as redacted canonical activity without inventing a token count', async () => {
@@ -251,6 +305,55 @@ test('accepts external model-declared events and aggregates reported token total
 	assert.equal(result.session.tokenUsage.totalTokens, 20);
 });
 
+test('accepts documented Copilot CLI hook activity only while an extension client is enabled', async () => {
+	const supervisor = await start();
+	const workspacePath = await temporaryDirectory('model-worklog-copilot-hook-workspace-');
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath });
+	const ignored = await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'SessionStart', session_id: 'copilot_ignored', cwd: workspacePath, source: 'new' });
+	assert.deepEqual(await ignored.json(), { schemaVersion: 1, accepted: false });
+
+	await api(supervisor, '/v1/extension-clients', 'POST', { clientId: 'vscode_window' });
+	const started = await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'SessionStart', session_id: 'copilot_1', cwd: workspacePath, source: 'new' });
+	const startedResult = await started.json() as { accepted: boolean; sessionId: string };
+	assert.equal(startedResult.accepted, true);
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'UserPromptSubmit', session_id: 'copilot_1', cwd: workspacePath, prompt: 'Inspect src/app.ts.' });
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'PreToolUse', session_id: 'copilot_1', cwd: workspacePath, tool_name: 'Read', tool_use_id: 'tool_1', tool_input: { file_path: join(workspacePath, 'src/app.ts') } });
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'PostToolUse', session_id: 'copilot_1', cwd: workspacePath, tool_name: 'Read', tool_use_id: 'tool_1', tool_input: { file_path: join(workspacePath, 'src/app.ts') }, tool_response: { result_type: 'success' } });
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'Stop', session_id: 'copilot_1', cwd: workspacePath, last_assistant_message: 'The requested file was reviewed.' });
+	assert.equal((await waitForTerminalSession(supervisor, startedResult.sessionId)).state, 'completed');
+	const ended = await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'SessionEnd', session_id: 'copilot_1', cwd: workspacePath, reason: 'complete' });
+	assert.deepEqual(await ended.json(), { schemaVersion: 1, accepted: false });
+	const events = (await (await api(supervisor, `/v1/sessions/${startedResult.sessionId}/events`)).json() as { events: { kind: string; actor: string; evidenceGrade: string; payload: Record<string, unknown> }[] }).events;
+	assert.ok(events.some((event) => event.kind === 'agent.message' && event.payload.text === 'Inspect src/app.ts.' && event.evidenceGrade === 'model-declared'));
+	assert.ok(events.some((event) => event.kind === 'tool.called' && event.payload.tool === 'Read'));
+	assert.ok(events.some((event) => event.kind === 'tool.completed' && event.payload.success === true));
+	assert.ok(events.some((event) => event.kind === 'file.read' && typeof event.payload.path === 'string' && event.payload.path.endsWith('app.ts')));
+	assert.ok(events.some((event) => event.kind === 'agent.summary' && event.payload.summary === 'The requested file was reviewed.'));
+	assert.equal(events.some((event) => event.actor !== 'copilot-cli-hook' && event.kind !== 'session.started' && event.kind !== 'session.completed'), false);
+});
+
+test('stops an active Copilot hook recording without closing the underlying CLI session', async () => {
+	const supervisor = await start();
+	const workspacePath = await temporaryDirectory('model-worklog-copilot-hook-stop-workspace-');
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath });
+	await api(supervisor, '/v1/extension-clients', 'POST', { clientId: 'vscode_window' });
+	const started = await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'SessionStart', session_id: 'copilot_1', cwd: workspacePath, source: 'new' });
+	const firstSessionId = (await started.json() as { sessionId: string }).sessionId;
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'UserPromptSubmit', session_id: 'copilot_1', cwd: workspacePath, prompt: 'Inspect the first task.' });
+	const stopped = await api(supervisor, `/v1/sessions/${firstSessionId}/cancel`, 'POST', {});
+	assert.equal(stopped.status, 202);
+	assert.equal((await waitForTerminalSession(supervisor, firstSessionId)).state, 'interrupted');
+	const firstEvents = (await (await api(supervisor, `/v1/sessions/${firstSessionId}/events`)).json() as { events: { kind: string; payload: Record<string, unknown> }[] }).events;
+	assert.ok(firstEvents.some((event) => event.kind === 'adapter.lifecycle' && event.payload.phase === 'recording-stopped'));
+
+	const nextTurn = await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'UserPromptSubmit', session_id: 'copilot_1', cwd: workspacePath, prompt: 'Inspect the second task.' });
+	const nextResult = await nextTurn.json() as { accepted: boolean; sessionId: string };
+	assert.equal(nextResult.accepted, true);
+	assert.notEqual(nextResult.sessionId, firstSessionId);
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'Stop', session_id: 'copilot_1', cwd: workspacePath });
+	assert.equal((await waitForTerminalSession(supervisor, nextResult.sessionId)).state, 'completed');
+});
+
 test('deletes completed logs but refuses to remove a running session', async () => {
 	const supervisor = await start();
 	const workspacePath = await temporaryDirectory('model-worklog-delete-workspace-');
@@ -330,6 +433,85 @@ test('starts supervisor-owned Codex logger sessions and cancels active relays', 
 	assert.equal(cancelled.status, 202);
 	assert.equal((await waitForTerminalSession(supervisor, cancelledSessionId)).state, 'interrupted');
 	assert.equal(cancelCalls, 1);
+});
+
+test('starts supervisor-owned Copilot CLI logger sessions and cancels active relays', async () => {
+	let cancelCalls = 0;
+	let first = true;
+	const relayFactory: CopilotRelayFactory = (sink, options, onFinished) => ({
+		start: async (): Promise<void> => {
+			if (!first) {
+				return;
+			}
+			first = false;
+			await sink.append({ kind: 'agent.message', actor: 'copilot-cli', evidenceGrade: 'observed-native', payload: { role: 'assistant', text: 'I inspected the task.' } });
+			await sink.recordUsage({ source: 'provider-reported', provider: 'github-copilot', model: 'gpt-example', inputTokens: 10, outputTokens: 5, totalTokens: 15 }, 'observed-native');
+			await sink.complete('completed');
+			onFinished(options.sessionId);
+		},
+		cancel: async (): Promise<void> => {
+			cancelCalls += 1;
+			await sink.complete('interrupted');
+			onFinished(options.sessionId);
+		},
+		shutdown: async (): Promise<void> => {
+			cancelCalls += 1;
+			await sink.complete('interrupted');
+			onFinished(options.sessionId);
+		},
+	});
+	const supervisor = await start({ copilotRelayFactory: relayFactory });
+	const workspacePath = await temporaryDirectory('model-worklog-copilot-workspace-');
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath });
+	const firstRun = await api(supervisor, '/v1/copilot-sessions', 'POST', { workspacePath, task: 'Inspect the failing test.', maxDurationMs: 5_000 });
+	assert.equal(firstRun.status, 202);
+	const firstSession = (await firstRun.json() as { session: { sessionId: string; title?: string } }).session;
+	assert.equal(firstSession.title, 'Inspect the failing test.');
+	assert.equal((await waitForTerminalSession(supervisor, firstSession.sessionId)).state, 'completed');
+	const events = (await (await api(supervisor, `/v1/sessions/${firstSession.sessionId}/events`)).json() as { events: { kind: string; evidenceGrade: string }[] }).events;
+	assert.equal(events.find((event) => event.kind === 'usage.reported')?.evidenceGrade, 'observed-native');
+
+	const secondRun = await api(supervisor, '/v1/copilot-sessions', 'POST', { workspacePath, task: 'Wait for cancellation.' });
+	const secondSessionId = (await secondRun.json() as { session: { sessionId: string } }).session.sessionId;
+	const cancelled = await api(supervisor, `/v1/sessions/${secondSessionId}/cancel`, 'POST', {});
+	assert.equal(cancelled.status, 202);
+	assert.equal((await waitForTerminalSession(supervisor, secondSessionId)).state, 'interrupted');
+	assert.equal(cancelCalls, 1);
+});
+
+test('records final documented telemetry for a tracked interactive Copilot CLI session', async () => {
+	const supervisor = await start();
+	const workspacePath = await temporaryDirectory('model-worklog-copilot-interactive-workspace-');
+	const vendorSessionId = '67d91fcb-49db-4acd-a9dd-46cc9a0ad927';
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath });
+	const started = await api(supervisor, '/v1/copilot-interactive-sessions', 'POST', { workspacePath, vendorSessionId });
+	assert.equal(started.status, 202);
+	const startedSession = (await started.json() as { session: { sessionId: string; state: string } }).session;
+	assert.equal(startedSession.state, 'running');
+
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'SessionStart', session_id: vendorSessionId, cwd: workspacePath });
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'UserPromptSubmit', session_id: vendorSessionId, cwd: workspacePath, prompt: 'Review the parser.' });
+	await api(supervisor, '/v1/copilot-hook-events', 'POST', { hook_event_name: 'SessionEnd', session_id: vendorSessionId, cwd: workspacePath, reason: 'exit' });
+	const usage = await api(supervisor, '/v1/copilot-interactive-usage', 'POST', {
+		vendorSessionId,
+		state: 'completed',
+		telemetry: `${JSON.stringify({ type: 'span', name: 'chat gpt-example', attributes: {
+			'gen_ai.provider.name': 'github-copilot',
+			'gen_ai.response.model': 'gpt-example',
+			'gen_ai.usage.input_tokens': 120,
+			'gen_ai.usage.output_tokens': 30,
+			'gen_ai.usage.cache_read.input_tokens': 40,
+			'gen_ai.usage.reasoning.output_tokens': 8,
+		} })}\n`,
+	});
+	assert.equal(usage.status, 200);
+	const completed = (await usage.json() as { accepted: boolean; usageReports: number; session: { state: string; tokenUsage: { totalTokens: number } } });
+	assert.equal(completed.accepted, true);
+	assert.equal(completed.usageReports, 1);
+	assert.equal(completed.session.state, 'completed');
+	assert.equal(completed.session.tokenUsage.totalTokens, 150);
+	const events = (await (await api(supervisor, `/v1/sessions/${startedSession.sessionId}/events`)).json() as { events: { kind: string; evidenceGrade: string }[] }).events;
+	assert.equal(events.find((event) => event.kind === 'usage.reported')?.evidenceGrade, 'observed-native');
 });
 
 test('marks unfinished sessions interrupted when a new supervisor recovers the evidence store', async () => {

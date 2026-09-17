@@ -21,6 +21,15 @@ retaining evidence on the host where the workspace runs.
 - The supervisor owns every managed child process. A stop request records the
   cancellation, sends `SIGTERM`, and uses `SIGKILL` only after a bounded grace
   period when the process remains alive.
+- A supervisor launched by the VS Code extension accepts authenticated,
+  expiring client leases. It stops only after the last extension client releases
+  its lease and no retained session is running; a CLI-managed supervisor never
+  enables this shutdown mode.
+- While Logger is enabled, the extension may install one Model Logger-owned
+  Copilot CLI hook in the user's Copilot hooks directory. The hook invokes a
+  bundled local bridge that posts only to the authenticated loopback supervisor,
+  emits a neutral hook response, and is removed after the final extension lease
+  is released. It never carries the supervisor token in the hook configuration.
 - Evidence is redacted before storage, responses, search, or export. API
   responses are marked `no-store` and carry restrictive browser-oriented
   response headers.

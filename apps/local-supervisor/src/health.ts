@@ -32,7 +32,7 @@ export function buildHealthResponse(identity: SupervisorIdentity, overrides: Hea
 		startedAt: identity.startedAt,
 		capabilities: {
 			adapters: overrides.adapters ?? ['codex-app-server'],
-			features: overrides.features ?? ['health', 'sessions', 'event-log', 'managed-process', 'workspace-trust', 'integration-ingest', 'codex-app-server-relay', 'session-cancel', 'token-budget', 'duration-budget', 'redacted-evidence-bundle', 'cost-report'],
+			features: overrides.features ?? ['health', 'sessions', 'event-log', 'managed-process', 'workspace-trust', 'vscode-client-leases', 'integration-ingest', 'codex-app-server-relay', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'session-cancel', 'token-budget', 'duration-budget', 'redacted-evidence-bundle', 'cost-report'],
 		},
 	};
 }

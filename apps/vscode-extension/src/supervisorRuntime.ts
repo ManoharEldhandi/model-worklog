@@ -49,12 +49,13 @@ export function supervisorEnvironment(url: URL, environment: NodeJS.ProcessEnv =
 		ELECTRON_RUN_AS_NODE: '1',
 		MODEL_WORKLOG_SUPERVISOR_HOST: host === 'localhost' ? '127.0.0.1' : host,
 		MODEL_WORKLOG_SUPERVISOR_PORT: port,
+		MODEL_WORKLOG_SHUTDOWN_WHEN_IDLE: '1',
 	};
 }
 
 /**
- * Owns only the extension's spawned-process handle. The local supervisor is
- * deliberately detached so an extension reload cannot discard durable evidence.
+ * Owns only the extension's spawned-process handle. The local supervisor stays
+ * detached for durable evidence and stops after its final extension client lease.
  */
 export class SupervisorRuntime {
 	private readonly spawnSupervisor: SpawnSupervisor;

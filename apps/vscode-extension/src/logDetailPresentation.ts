@@ -178,7 +178,16 @@ function sessionTokenTotals(summary: TokenUsageSummary): TokenTotals | undefined
 function tokenSection(session: SupervisorSession, events: readonly SessionEvent[]): LogDetailSection | undefined {
 	const totals = reportedTokenTotals(events) ?? sessionTokenTotals(session.tokenUsage);
 	if (totals === undefined) {
-		return undefined;
+		const automaticCopilotHook = session.actor === 'copilot-cli-hook';
+		return {
+			title: 'Tokens Used',
+			entries: [{
+				label: automaticCopilotHook ? 'Unavailable from Copilot CLI hook' : 'Not reported',
+				content: automaticCopilotHook
+					? 'Copilot CLI does not provide token usage to automatic hooks. Use Log a Copilot CLI Task to record provider-reported usage.'
+					: 'The connected AI integration did not provide token usage for this session.',
+			}],
+		};
 	}
 	return {
 		title: 'Tokens Used',
@@ -244,7 +253,10 @@ export function buildLogDetail(session: SupervisorSession, events: readonly Sess
 			continue;
 		}
 		if (event.kind === 'file.read') {
-			files.push({ label: `${time}  Read ${text(payload.path) ?? 'a file'}`, content: text(payload.tool) === undefined ? undefined : `Using ${text(payload.tool)}` });
+			const pathType = text(payload.pathType);
+			const target = text(payload.path) ?? 'a path';
+			const action = pathType === 'directory' ? 'Inspected directory' : pathType === 'file' ? 'Read file' : 'Read path';
+			files.push({ label: `${time}  ${action}: ${target}`, content: text(payload.tool) === undefined ? undefined : `Using ${text(payload.tool)}` });
 			continue;
 		}
 		if (event.kind === 'file.changed') {

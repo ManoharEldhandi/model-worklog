@@ -1,12 +1,17 @@
 import * as assert from 'assert';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
-import { codexSessionPath, deleteSession, evidenceBundlePath, parseCommandArray, sessionEventQueryPath } from '../supervisorApi';
+import { copilotHookPath, installCopilotHook, removeCopilotHook } from '../copilotHookInstaller';
+import { codexSessionPath, copilotInteractiveSessionPath, copilotSessionPath, deleteSession, evidenceBundlePath, extensionClientPath, sessionEventQueryPath } from '../supervisorApi';
 import { bundledSupervisorPath, supervisorEnvironment } from '../supervisorRuntime';
 import { SupervisorRuntime } from '../supervisorRuntime';
-import { describeConnection, interpretHealthJson } from '../supervisorClient';
+import { describeConnection, interpretHealthJson, missingSupervisorFeatures } from '../supervisorClient';
 import { logDownloadFileName, presentSession } from '../sessionPresentation';
 import { SidebarLogView } from '../sidebarLogView';
 import { buildLogDetail } from '../logDetailPresentation';
+import { logDetailsHtml } from '../logDetailsView';
 import { formatSessionEventText, type SessionEvent } from 'model-worklog-schema';
 
 suite('Extension Test Suite', () => {
@@ -14,9 +19,62 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(codexSessionPath(), '/v1/codex-sessions');
 	});
 
+	test('builds the Model Logger Copilot CLI session endpoint', () => {
+		assert.strictEqual(copilotSessionPath(), '/v1/copilot-sessions');
+	});
+
+	test('builds the tracked interactive Copilot CLI session endpoint', () => {
+		assert.strictEqual(copilotInteractiveSessionPath(), '/v1/copilot-interactive-sessions');
+	});
+
+	test('runs the interactive Copilot bridge as Node from the Electron extension host', async () => {
+		const source = await readFile(join(__dirname, '..', 'extension.js'), 'utf8');
+		assert.ok(source.includes("ELECTRON_RUN_AS_NODE: '1'"));
+		assert.ok(source.includes('shellPath: process.execPath'));
+		assert.ok(source.includes("'copilot-interactive-bridge.js'"));
+	});
+
+	test('builds an encoded extension client lease endpoint', () => {
+		assert.strictEqual(extensionClientPath(), '/v1/extension-clients');
+		assert.strictEqual(extensionClientPath('vscode/window'), '/v1/extension-clients/vscode%2Fwindow');
+	});
+
 	test('registers the bottom Model Logger detail panel', async () => {
 		const commands = await vscode.commands.getCommands(true);
 		assert.ok(commands.includes('workbench.view.extension.model-worklog-details'));
+	});
+
+	test('renders a compact expandable log-entry control in the detail webview', () => {
+		const markup = logDetailsHtml();
+		assert.ok(markup.includes('max-height: 2.9em'));
+		assert.ok(markup.includes('value.split(/\\r?\\n/)'));
+		assert.ok(markup.includes('const expandedEntries = new Set'));
+		assert.ok(markup.includes('vscode.setState({ sessionId: selectedSessionId, expandedEntries: [...expandedEntries] })'));
+		assert.ok(markup.includes('if (selectedSessionId !== model.sessionId)'));
+		assert.ok(markup.includes("toggle.textContent = expanded ? 'Show less' : 'Show more'"));
+		const script = /<script nonce="[^"]+">([\s\S]*)<\/script>/.exec(markup)?.[1];
+		assert.ok(script !== undefined);
+		assert.doesNotThrow(() => new Function(script));
+	});
+
+	test('installs and removes only the Model Logger Copilot CLI personal hook', async () => {
+		const copilotHome = await mkdtemp(join(tmpdir(), 'model-worklog-copilot-home-'));
+		const environment = { COPILOT_HOME: copilotHome } as NodeJS.ProcessEnv;
+		try {
+			const path = await installCopilotHook({ bridgePath: '/extension/dist/copilot-hook-bridge.js', supervisorUrl: 'http://127.0.0.1:43199/', modelWorklogHome: '/model-worklog' }, environment);
+			assert.strictEqual(path, copilotHookPath(environment));
+			const config = JSON.parse(await readFile(path, 'utf8')) as { version: number; hooks: Record<string, { exec: string; args: string[]; env: Record<string, string> }[]> };
+			assert.strictEqual(config.version, 1);
+			assert.deepStrictEqual(Object.keys(config.hooks), ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SubagentStop', 'SessionEnd', 'ErrorOccurred']);
+			assert.deepStrictEqual(config.hooks.SessionStart?.[0], {
+				type: 'command', exec: 'node', args: ['/extension/dist/copilot-hook-bridge.js'],
+				env: { MODEL_WORKLOG_HOOK_BRIDGE: '1', MODEL_WORKLOG_SUPERVISOR_URL: 'http://127.0.0.1:43199/', MODEL_WORKLOG_HOME: '/model-worklog' }, timeoutSec: 3,
+			});
+			await removeCopilotHook(environment);
+			await assert.rejects(() => access(path));
+		} finally {
+			await rm(copilotHome, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -51,14 +109,11 @@ suite('Supervisor client', () => {
 		assert.ok(detail.label.includes('connected'));
 		assert.ok(detail.detail.length > 0);
 	});
-});
 
-suite('Managed command input', () => {
-	test('accepts an explicit string argument vector and rejects shell-like input', () => {
-		assert.deepStrictEqual(parseCommandArray('["npm", "test", "--", "file name"]'), ['npm', 'test', '--', 'file name']);
-		assert.strictEqual(parseCommandArray('npm test'), undefined);
-		assert.strictEqual(parseCommandArray('["npm", 1]'), undefined);
-		assert.strictEqual(parseCommandArray('[]'), undefined);
+	test('detects a supervisor that lacks required client lease support', () => {
+		const connection = interpretHealthJson(validHealth);
+		assert.deepStrictEqual(missingSupervisorFeatures(connection, ['vscode-client-leases', 'copilot-hook-turn-completion']), ['vscode-client-leases', 'copilot-hook-turn-completion']);
+		assert.deepStrictEqual(missingSupervisorFeatures(interpretHealthJson({ ...validHealth, capabilities: { adapters: [], features: ['vscode-client-leases', 'copilot-hook-turn-completion'] } }), ['vscode-client-leases', 'copilot-hook-turn-completion']), []);
 	});
 });
 
@@ -106,6 +161,7 @@ suite('Bundled supervisor runtime', () => {
 		const environment = supervisorEnvironment(new URL('http://127.0.0.1:43199'), { MODEL_WORKLOG_SUPERVISOR_HOST: '0.0.0.0' });
 		assert.strictEqual(environment.MODEL_WORKLOG_SUPERVISOR_PORT, '43199');
 		assert.strictEqual(environment.MODEL_WORKLOG_SUPERVISOR_HOST, '127.0.0.1');
+		assert.strictEqual(environment.MODEL_WORKLOG_SHUTDOWN_WHEN_IDLE, '1');
 		assert.strictEqual(supervisorEnvironment(new URL('http://localhost')).MODEL_WORKLOG_SUPERVISOR_PORT, '43199');
 		assert.throws(() => supervisorEnvironment(new URL('https://example.test:43199')), /loopback HTTP URL/);
 	});
@@ -145,7 +201,7 @@ suite('Readable session evidence', () => {
 			payload: { tool: 'read_file', arguments: { path: 'src/app.ts' } }, redaction: { policyVersion: '1', replacements: 0, truncated: false },
 		});
 		assert.ok(lines.some((line) => line.includes('Tool started: read_file')));
-		assert.ok(lines.some((line) => line.includes('Target file: src/app.ts')));
+		assert.ok(lines.some((line) => line.includes('Target path: src/app.ts')));
 	});
 });
 
@@ -169,6 +225,15 @@ suite('Log session presentation', () => {
 		});
 		assert.strictEqual(presentation.description, 'Completed · 6 updates · 60 tokens');
 		assert.ok(presentation.tooltip.includes('Token count: 60 tokens'));
+	});
+
+	test('labels direct Copilot CLI sessions as native agent evidence', () => {
+		const presentation = presentSession({
+			sessionId: 'ses_copilot', state: 'running', runMode: 'managed', actor: 'copilot-cli', eventCount: 4,
+			tokenUsage: { status: 'unknown', reason: 'not-observed' },
+		});
+		assert.strictEqual(presentation.title, 'Copilot CLI log');
+		assert.ok(presentation.tooltip.includes('documented Copilot CLI messages'));
 	});
 
 	test('uses the task title for log names and JSON downloads', () => {
@@ -202,7 +267,7 @@ suite('Sidebar activity UI', () => {
 				return;
 			}
 			assert.strictEqual(view.getParent(log), liveGroup);
-			assert.deepStrictEqual(view.getChildren(log).map((item) => item.kind === 'action' ? item.action : item.kind), ['view-log', 'download-json']);
+			assert.deepStrictEqual(view.getChildren(log).map((item) => item.kind === 'action' ? item.action : item.kind), ['stop-log', 'view-log', 'download-json']);
 		} finally {
 			view.dispose();
 		}
@@ -226,12 +291,62 @@ suite('Sidebar activity UI', () => {
 		}
 	});
 
+	test('opens a log directly when its sidebar session item is selected', () => {
+		const view = new SidebarLogView();
+		try {
+			view.setLoggerState(true, 'connected', 'Local Logger is ready.');
+			view.setSessions([{
+				sessionId: 'ses_open', state: 'completed', runMode: 'observe', actor: 'example-agent', eventCount: 1,
+				tokenUsage: { status: 'unknown', reason: 'not-observed' },
+			}]);
+			const item = view.getTreeItem(view.sessionItem('ses_open'));
+			assert.strictEqual(item.command?.command, 'model-worklog.openSessionLog');
+			assert.deepStrictEqual(item.command?.arguments, ['ses_open']);
+		} finally {
+			view.dispose();
+		}
+	});
+
+	test('hides legacy workspace and terminal observer sessions', () => {
+		const view = new SidebarLogView();
+		try {
+			view.setLoggerState(true, 'connected', 'Local Logger is ready.');
+			view.setSessions([
+				{ sessionId: 'ses_workspace', state: 'running', runMode: 'observe', actor: 'workspace-observer', eventCount: 18_000, tokenUsage: { status: 'unknown', reason: 'not-observed' } },
+				{ sessionId: 'ses_terminal', state: 'running', runMode: 'observe', actor: 'vscode-terminal', eventCount: 3, tokenUsage: { status: 'unknown', reason: 'not-observed' } },
+				{ sessionId: 'ses_agent', state: 'running', runMode: 'observe', actor: 'example-agent', eventCount: 4, tokenUsage: { status: 'unknown', reason: 'not-observed' } },
+			]);
+			const liveGroup = view.getChildren().find((item) => item.kind === 'group' && item.group === 'live');
+			assert.ok(liveGroup !== undefined);
+			if (liveGroup !== undefined) {
+				assert.deepStrictEqual(view.getChildren(liveGroup).map((item) => item.kind === 'session' ? item.sessionId : item.kind), ['ses_agent']);
+			}
+		} finally {
+			view.dispose();
+		}
+	});
+
+	test('keeps the latest agent session available when legacy sessions precede it', () => {
+		const view = new SidebarLogView();
+		try {
+			view.setLoggerState(true, 'connected', 'Local Logger is ready.');
+			view.setSessions([
+				{ sessionId: 'ses_legacy', state: 'completed', runMode: 'observe', actor: 'workspace-observer', eventCount: 1, tokenUsage: { status: 'unknown', reason: 'not-observed' } },
+				{ sessionId: 'ses_latest', state: 'completed', runMode: 'observe', actor: 'copilot-cli-hook', eventCount: 2, tokenUsage: { status: 'unknown', reason: 'not-observed' } },
+			]);
+			assert.strictEqual(view.getSession('ses_legacy'), undefined);
+			assert.ok(view.getSession('ses_latest') !== undefined);
+		} finally {
+			view.dispose();
+		}
+	});
+
 	test('offers Delete Log only after a session finishes', () => {
 		const view = new SidebarLogView();
 		try {
 			view.setLoggerState(true, 'connected', 'Local Logger is ready.');
 			view.setSessions([{ sessionId: 'ses_live', state: 'running', runMode: 'observe', actor: 'agent', eventCount: 1, tokenUsage: { status: 'unknown', reason: 'not-observed' } }]);
-			assert.deepStrictEqual(view.getChildren(view.sessionItem('ses_live')).map((item) => item.kind === 'action' ? item.action : item.kind), ['view-log', 'download-json']);
+			assert.deepStrictEqual(view.getChildren(view.sessionItem('ses_live')).map((item) => item.kind === 'action' ? item.action : item.kind), ['stop-log', 'view-log', 'download-json']);
 			view.setSessions([{ sessionId: 'ses_done', state: 'completed', runMode: 'observe', actor: 'agent', eventCount: 2, tokenUsage: { status: 'unknown', reason: 'not-observed' } }]);
 			assert.deepStrictEqual(view.getChildren(view.sessionItem('ses_done')).map((item) => item.kind === 'action' ? item.action : item.kind), ['view-log', 'download-json', 'delete-log']);
 		} finally {
@@ -262,5 +377,34 @@ suite('Selected log details', () => {
 		assert.ok(detail.sections[2]?.entries.some((entry) => entry.label.includes('read_file selected')));
 		assert.equal(detail.sections[3]?.entries[0]?.content, 'The parser was reviewed and the focused test passed.');
 		assert.deepStrictEqual(detail.sections.at(-1)?.entries.slice(0, 4).map((entry) => entry.label), ['Total: 40', 'Input: 30', 'Output: 10', 'Reasoning: 2']);
+	});
+
+	test('keeps complete entry content in the detail model for compact webview expansion and JSON export', () => {
+		const response = 'line one\nline two\nline three\n'.repeat(150);
+		const session = {
+			sessionId: 'ses_full_content', state: 'completed', runMode: 'observe', actor: 'example-agent', eventCount: 2,
+			tokenUsage: { status: 'unknown', reason: 'not-observed' } as const,
+		};
+		const detail = buildLogDetail(session, [
+			{ schemaVersion: 1, eventId: 'evt_request', sessionId: session.sessionId, sequence: 1, occurredAt: '2026-09-17T06:00:00.000Z', kind: 'agent.message', actor: 'example-agent', evidenceGrade: 'model-declared', payload: { role: 'user', text: 'Summarize the result.' }, redaction: { policyVersion: '1', replacements: 0, truncated: false } },
+			{ schemaVersion: 1, eventId: 'evt_response', sessionId: session.sessionId, sequence: 2, occurredAt: '2026-09-17T06:00:01.000Z', kind: 'agent.message', actor: 'example-agent', evidenceGrade: 'model-declared', payload: { role: 'assistant', text: response }, redaction: { policyVersion: '1', replacements: 0, truncated: false } },
+		]);
+		const agentResponse = detail.sections.find((section) => section.title === 'Agent Response')?.entries[0]?.content;
+		assert.strictEqual(agentResponse, response);
+	});
+
+	test('keeps token availability in the final section when an integration does not report usage', () => {
+		const session = {
+			sessionId: 'ses_unknown_tokens', state: 'completed', runMode: 'observe', actor: 'copilot-cli-hook', eventCount: 1,
+			tokenUsage: { status: 'unknown', reason: 'not-observed' } as const,
+		};
+		const detail = buildLogDetail(session, [
+			{ schemaVersion: 1, eventId: 'evt_request', sessionId: session.sessionId, sequence: 1, occurredAt: '2026-09-17T06:00:00.000Z', kind: 'agent.message', actor: 'copilot-cli-hook', evidenceGrade: 'model-declared', payload: { role: 'user', text: 'Inspect the task.' }, redaction: { policyVersion: '1', replacements: 0, truncated: false } },
+		]);
+		assert.strictEqual(detail.sections.at(-1)?.title, 'Tokens Used');
+		assert.deepStrictEqual(detail.sections.at(-1)?.entries, [{
+			label: 'Unavailable from Copilot CLI hook',
+			content: 'Copilot CLI does not provide token usage to automatic hooks. Use Log a Copilot CLI Task to record provider-reported usage.',
+		}]);
 	});
 });

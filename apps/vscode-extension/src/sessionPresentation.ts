@@ -11,10 +11,32 @@ function sourceLabel(session: SupervisorSession): string {
 	if (session.actor === 'codex-app-server') {
 		return 'Codex';
 	}
+	if (session.actor === 'copilot-cli') {
+		return 'Copilot CLI';
+	}
+	if (session.actor === 'copilot-cli-interactive') {
+		return 'Copilot CLI (interactive)';
+	}
 	if (session.runMode === 'managed') {
-		return 'Command';
+		return 'CLI boundary';
 	}
 	return session.actor;
+}
+
+function captureDetail(session: SupervisorSession): string {
+	if (session.actor === 'codex-app-server') {
+		return 'Capture: documented Codex App Server activity observed by the supervisor.';
+	}
+	if (session.actor === 'copilot-cli') {
+		return 'Capture: documented Copilot CLI messages, tool activity, results, and provider-reported usage observed by the supervisor.';
+	}
+	if (session.actor === 'copilot-cli-interactive') {
+		return 'Capture: documented Copilot CLI hook activity plus final provider-reported usage from local metadata-only telemetry.';
+	}
+	if (session.runMode === 'managed') {
+		return 'Capture: process lifecycle, bounded output, and workspace diff only; no internal agent activity.';
+	}
+	return 'Capture: activity reported by the agent integration.';
 }
 
 function slug(value: string): string {
@@ -66,7 +88,7 @@ export function presentSession(session: SupervisorSession): SessionPresentation 
 	return {
 		title: taskTitle,
 		description: `${state} · ${updates}${session.tokenUsage.status === 'reported' ? ` · ${tokenUsage}` : ''}`,
-		tooltip: `${taskTitle}\n${session.sessionId}\n${source} · ${state} · ${session.runMode} · ${updates}\nToken count: ${tokenUsage}${session.tokenUsage.status === 'reported' ? '' : '\nToken counts appear only when the AI provider or integration reports them.'}`,
+		tooltip: `${taskTitle}\n${session.sessionId}\n${source} · ${state} · ${session.runMode} · ${updates}\n${captureDetail(session)}\nToken count: ${tokenUsage}${session.tokenUsage.status === 'reported' ? '' : '\nToken counts appear only when the AI provider or integration reports them.'}`,
 		icon: stateIcon(session.state),
 	};
 }

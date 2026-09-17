@@ -1,14 +1,20 @@
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+
 import * as vscode from 'vscode';
 
+import { installCopilotHook, removeCopilotHook } from './copilotHookInstaller';
 import { LogDetailsView } from './logDetailsView';
 import { logDownloadFileName, presentSession } from './sessionPresentation';
 import { SidebarLogView, type SidebarLogItem } from './sidebarLogView';
-import { deleteSession, getEvidenceBundle, getSessionEventSnapshot, listSessions, parseCommandArray, startCodexSession, startManagedRun, trustWorkspace, type SupervisorSession } from './supervisorApi';
-import { describeConnection, type SupervisorConnection } from './supervisorClient';
+import { cancelSession, deleteSession, getEvidenceBundle, getSessionEventSnapshot, listSessions, registerExtensionClient, releaseExtensionClient, startCodexSession, startCopilotInteractiveSession, startCopilotSession, trustWorkspace, type SupervisorSession } from './supervisorApi';
+import { describeConnection, missingSupervisorFeatures, type SupervisorConnection } from './supervisorClient';
 import { SupervisorRuntime } from './supervisorRuntime';
 
 const SESSION_REFRESH_INTERVAL_MS = 1_000;
 const SELECTED_LOG_REFRESH_INTERVAL_MS = 150;
+const EXTENSION_CLIENT_HEARTBEAT_INTERVAL_MS = 10_000;
+const REQUIRED_SUPERVISOR_FEATURES = ['vscode-client-leases', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage'];
 
 interface ActiveLogFollower {
 	readonly sessionId: string;
@@ -17,6 +23,11 @@ interface ActiveLogFollower {
 
 interface LogFollowerState {
 	active: ActiveLogFollower | undefined;
+}
+
+interface ExtensionClientState {
+	readonly clientId: string;
+	registered: boolean;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -28,6 +39,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	});
 	const supervisorRuntime = new SupervisorRuntime({ extensionPath: context.extensionPath });
 	const followerState: LogFollowerState = { active: undefined };
+	const extensionClientState: ExtensionClientState = { clientId: `vscode_${randomUUID()}`, registered: false };
 	let refreshInFlight = false;
 	const refreshTimer = setInterval(() => {
 		if (!sessionView.isLoggerEnabled() || refreshInFlight) {
@@ -39,11 +51,38 @@ export function activate(context: vscode.ExtensionContext): void {
 		}
 		refreshInFlight = true;
 		void refreshSessions(url, sessionView, false)
-			.then((sessions) => updateSelectedDetails(detailsView, sessions))
+			.then(async (sessions) => {
+				updateSelectedDetails(detailsView, sessions);
+				await openLatestLogWhenUnselected(sessionView, detailsView, url, sessions, followerState);
+			})
 			.finally(() => {
 				refreshInFlight = false;
 			});
 	}, SESSION_REFRESH_INTERVAL_MS);
+	const heartbeatTimer = setInterval(() => {
+		if (!sessionView.isLoggerEnabled() || !extensionClientState.registered) {
+			return;
+		}
+		const url = configuredSupervisorUrl(false);
+		if (url !== undefined) {
+			void registerExtensionClient(url, extensionClientState.clientId).catch(() => undefined);
+		}
+	}, EXTENSION_CLIENT_HEARTBEAT_INTERVAL_MS);
+	const releaseClient = async (): Promise<number | undefined> => {
+		if (!extensionClientState.registered) {
+			return undefined;
+		}
+		const url = configuredSupervisorUrl(false);
+		if (url === undefined) {
+			return undefined;
+		}
+		const activeClients = await releaseExtensionClient(url, extensionClientState.clientId);
+		extensionClientState.registered = false;
+		if (activeClients === 0) {
+			await removeCopilotHook();
+		}
+		return activeClients;
+	};
 
 	context.subscriptions.push(
 		sessionView,
@@ -51,27 +90,37 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.window.registerWebviewViewProvider('model-worklog.logDetails', detailsView, { webviewOptions: { retainContextWhenHidden: true } }),
 		{ dispose: () => {
 			clearInterval(refreshTimer);
+			clearInterval(heartbeatTimer);
 			followerState.active?.controller.abort();
+			if (extensionClientState.registered) {
+				void releaseClient().catch(() => undefined);
+			}
 			detailsView.clear();
 		} },
 		vscode.commands.registerCommand('model-worklog.enable', async () => {
 			if (!requireTrustedWorkspace()) {
 				return;
 			}
-			await enableLogger(supervisorRuntime, sessionView, detailsView, true);
+			await enableLogger(supervisorRuntime, sessionView, detailsView, followerState, extensionClientState, join(context.extensionPath, 'dist', 'copilot-hook-bridge.js'), true);
 		}),
-		vscode.commands.registerCommand('model-worklog.disable', () => {
+		vscode.commands.registerCommand('model-worklog.disable', async () => {
 			followerState.active?.controller.abort();
 			followerState.active = undefined;
+			let detail = 'Agent logging has stopped in this VS Code window.';
+			try {
+				await releaseClient();
+			} catch (error) {
+				detail = `Could not confirm that Logger stopped: ${message(error)}`;
+			}
 			detailsView.clear();
-			sessionView.setLoggerState(false, 'disabled', 'Activity is hidden in this VS Code window. Existing agent sessions keep running safely.');
+			sessionView.setLoggerState(false, 'disabled', `${detail} Existing agent sessions keep running safely.`);
 			vscode.window.showInformationMessage('Model Logger is disabled in this VS Code window.');
 		}),
 		vscode.commands.registerCommand('model-worklog.reconnect', async () => {
 			if (!requireTrustedWorkspace()) {
 				return;
 			}
-			await enableLogger(supervisorRuntime, sessionView, detailsView, false);
+			await enableLogger(supervisorRuntime, sessionView, detailsView, followerState, extensionClientState, join(context.extensionPath, 'dist', 'copilot-hook-bridge.js'), false);
 		}),
 		vscode.commands.registerCommand('model-worklog.refreshSessions', async () => {
 			if (!sessionView.isLoggerEnabled()) {
@@ -84,7 +133,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 		vscode.commands.registerCommand('model-worklog.startCodexSession', async () => {
-			if (!requireTrustedWorkspace() || !await enableLogger(supervisorRuntime, sessionView, detailsView, false)) {
+			if (!requireTrustedWorkspace() || !await enableLogger(supervisorRuntime, sessionView, detailsView, followerState, extensionClientState, join(context.extensionPath, 'dist', 'copilot-hook-bridge.js'), false)) {
 				return;
 			}
 			const workspacePath = activeWorkspacePath();
@@ -112,8 +161,8 @@ export function activate(context: vscode.ExtensionContext): void {
 				vscode.window.showWarningMessage(`Could not start Codex logging: ${message(error)}`);
 			}
 		}),
-		vscode.commands.registerCommand('model-worklog.startLoggedCommand', async () => {
-			if (!requireTrustedWorkspace() || !await enableLogger(supervisorRuntime, sessionView, detailsView, false)) {
+		vscode.commands.registerCommand('model-worklog.startCopilotSession', async () => {
+			if (!requireTrustedWorkspace() || !await enableLogger(supervisorRuntime, sessionView, detailsView, followerState, extensionClientState, join(context.extensionPath, 'dist', 'copilot-hook-bridge.js'), false)) {
 				return;
 			}
 			const workspacePath = activeWorkspacePath();
@@ -121,21 +170,108 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (workspacePath === undefined || url === undefined) {
 				return;
 			}
-			const input = await vscode.window.showInputBox({ title: 'Log a Command', prompt: 'Command as a JSON string array', value: '["npm", "test"]' });
-			if (input === undefined) {
+			const task = await vscode.window.showInputBox({
+				title: 'Log a Copilot CLI Task',
+				prompt: 'Task for Copilot CLI',
+				ignoreFocusOut: true,
+				validateInput: (value) => value.trim() === '' ? 'Enter a task for Copilot CLI.' : value.length > 32_000 ? 'Task must be at most 32,000 characters.' : undefined,
+			});
+			if (task === undefined) {
 				return;
 			}
-			const command = parseCommandArray(input);
-			if (command === undefined) {
-				vscode.window.showWarningMessage('Enter a non-empty JSON array of command strings.');
+			const consent = await vscode.window.showWarningMessage(
+				'Copilot CLI will run this task with tool permission in the trusted workspace. Model Logger will record Copilot\'s visible messages, tool activity, results, and reported usage. Continue?',
+				{ modal: true },
+				'Start Copilot Task',
+			);
+			if (consent !== 'Start Copilot Task') {
 				return;
 			}
 			try {
-				const session = await startManagedRun(url, workspacePath, command[0]!, command.slice(1));
+				const session = await startCopilotSession(url, workspacePath, task, { maxDurationMs: configuredCopilotDurationMinutes() * 60 * 1_000 });
 				await refreshSessions(url, sessionView, false);
-				vscode.window.showInformationMessage(`Command activity is now being recorded. Select View Log under Live Activity for ${session.sessionId}.`);
+				vscode.window.showInformationMessage(`Copilot CLI activity is now being recorded. Select View Log under Live Activity for ${session.sessionId}.`);
 			} catch (error) {
-				vscode.window.showWarningMessage(`Could not start command logging: ${message(error)}`);
+				vscode.window.showWarningMessage(`Could not start Copilot CLI logging: ${message(error)}`);
+			}
+		}),
+		vscode.commands.registerCommand('model-worklog.startCopilotInteractiveSession', async () => {
+			if (!requireTrustedWorkspace() || !await enableLogger(supervisorRuntime, sessionView, detailsView, followerState, extensionClientState, join(context.extensionPath, 'dist', 'copilot-hook-bridge.js'), false)) {
+				return;
+			}
+			const workspace = activeWorkspaceUri();
+			const url = configuredSupervisorUrl();
+			if (workspace === undefined || url === undefined) {
+				return;
+			}
+			const consent = await vscode.window.showWarningMessage(
+				'Copilot CLI will open in an interactive terminal. Model Logger will record its documented hook activity and final provider-reported token usage. Continue?',
+				{ modal: true },
+				'Start Interactive Copilot',
+			);
+			if (consent !== 'Start Interactive Copilot') {
+				return;
+			}
+			const vendorSessionId = randomUUID();
+			try {
+				const session = await startCopilotInteractiveSession(url, workspace.fsPath, vendorSessionId);
+				const terminal = vscode.window.createTerminal({
+					name: 'Model Logger: Copilot CLI',
+					cwd: workspace,
+					shellPath: process.execPath,
+					shellArgs: [join(context.extensionPath, 'dist', 'copilot-interactive-bridge.js'), vendorSessionId],
+					env: {
+						ELECTRON_RUN_AS_NODE: '1',
+						MODEL_WORKLOG_SUPERVISOR_URL: url.toString(),
+						...(process.env.MODEL_WORKLOG_HOME === undefined ? {} : { MODEL_WORKLOG_HOME: process.env.MODEL_WORKLOG_HOME }),
+					},
+				});
+				terminal.show();
+				await refreshSessions(url, sessionView, false);
+				vscode.window.showInformationMessage(`Interactive Copilot activity is now being recorded. Use the opened terminal, then select View Log for ${session.sessionId}.`);
+			} catch (error) {
+				vscode.window.showWarningMessage(`Could not start interactive Copilot CLI logging: ${message(error)}`);
+			}
+		}),
+		vscode.commands.registerCommand('model-worklog.stopLiveLog', async (sessionId: string) => {
+			if (!sessionView.isLoggerEnabled()) {
+				vscode.window.showInformationMessage('Enable Logger to stop a live log.');
+				return;
+			}
+			const session = sessionView.getSession(sessionId);
+			if (session === undefined || session.state !== 'running') {
+				vscode.window.showWarningMessage('This log is no longer live. Refresh Logs to update the sidebar.');
+				return;
+			}
+			const interactiveCopilotSession = session.actor === 'copilot-cli-interactive';
+			const hookSession = session.actor === 'copilot-cli-hook' || interactiveCopilotSession;
+			const answer = await vscode.window.showWarningMessage(
+				interactiveCopilotSession
+					? 'Stop recording this interactive Copilot CLI session? The Copilot CLI session itself will keep running.'
+					: hookSession
+					? 'Stop recording this Copilot CLI turn? The Copilot CLI session itself will keep running.'
+					: 'Stop this live log? This interrupts the Logger-managed agent task.',
+				{ modal: true },
+				'Stop Log',
+			);
+			if (answer !== 'Stop Log') {
+				return;
+			}
+			const url = configuredSupervisorUrl();
+			if (url === undefined) {
+				return;
+			}
+			try {
+				await cancelSession(url, sessionId);
+				if (followerState.active?.sessionId === sessionId) {
+					followerState.active.controller.abort();
+					followerState.active = undefined;
+				}
+				const sessions = await refreshSessions(url, sessionView, false);
+				updateSelectedDetails(detailsView, sessions);
+				vscode.window.showInformationMessage(interactiveCopilotSession ? 'Stopped recording this interactive Copilot CLI session.' : hookSession ? 'Stopped recording this Copilot CLI turn.' : 'Stop requested for the live agent task.');
+			} catch (error) {
+				vscode.window.showWarningMessage(`Could not stop live logging: ${message(error)}`);
 			}
 		}),
 		vscode.commands.registerCommand('model-worklog.openSessionLog', async (sessionId: string) => {
@@ -226,8 +362,12 @@ function requireTrustedWorkspace(): boolean {
 	return false;
 }
 
-async function enableLogger(runtime: SupervisorRuntime, sessionView: SidebarLogView, detailsView: LogDetailsView, announce: boolean): Promise<boolean> {
-	const workspacePath = activeWorkspacePath();
+async function enableLogger(runtime: SupervisorRuntime, sessionView: SidebarLogView, detailsView: LogDetailsView, followerState: LogFollowerState, extensionClientState: ExtensionClientState, copilotHookBridgePath: string, announce: boolean): Promise<boolean> {
+	const workspace = activeWorkspaceUri();
+	if (workspace === undefined) {
+		return false;
+	}
+	const workspacePath = workspace.fsPath;
 	const url = configuredSupervisorUrl();
 	if (workspacePath === undefined || url === undefined) {
 		return false;
@@ -240,11 +380,34 @@ async function enableLogger(runtime: SupervisorRuntime, sessionView: SidebarLogV
 			reportConnection(connection);
 			return false;
 		}
+		const missingFeatures = missingSupervisorFeatures(connection, REQUIRED_SUPERVISOR_FEATURES);
+		if (missingFeatures.length > 0) {
+			const missing = missingFeatures.join(', ');
+			const detail = `The running local supervisor does not support ${missing}. Stop the old Model Logger supervisor, then reconnect after installing this extension update.`;
+			sessionView.setLoggerState(false, 'upgrade required', detail);
+			vscode.window.showWarningMessage(detail);
+			return false;
+		}
+		await registerExtensionClient(url, extensionClientState.clientId);
+		extensionClientState.registered = true;
 		await trustWorkspace(url, workspacePath);
+		let hookDetail = 'Copilot CLI hook is active for future Copilot sessions on this machine. VS Code does not expose existing Copilot Chat activity to other extensions.';
+		try {
+			await installCopilotHook({
+				bridgePath: copilotHookBridgePath,
+				supervisorUrl: url.toString(),
+				...(process.env.MODEL_WORKLOG_HOME === undefined ? {} : { modelWorklogHome: process.env.MODEL_WORKLOG_HOME }),
+			});
+		} catch (error) {
+			hookDetail = `Copilot CLI hook could not be installed: ${message(error)}`;
+			vscode.window.showWarningMessage(hookDetail);
+		}
+		sessionView.setLoggerState(true, label, `${detail} ${hookDetail}`);
 		const sessions = await refreshSessions(url, sessionView, false);
 		updateSelectedDetails(detailsView, sessions);
+		await openLatestLogWhenUnselected(sessionView, detailsView, url, sessions, followerState);
 		if (announce) {
-			vscode.window.showInformationMessage('Model Logger is enabled in this VS Code window.');
+			vscode.window.showInformationMessage('Model Logger is enabled. Restart Copilot CLI for future CLI logging. VS Code does not expose existing Copilot Chat activity to other extensions.');
 		}
 		return true;
 	} catch (error) {
@@ -288,11 +451,19 @@ function configuredSupervisorUrl(announce = true): URL | undefined {
 }
 
 function activeWorkspacePath(): string | undefined {
-	const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-	if (workspacePath === undefined) {
+	const workspace = activeWorkspaceUri(false);
+	if (workspace === undefined) {
 		vscode.window.showWarningMessage('Open a workspace folder before using Model Logger.');
 	}
-	return workspacePath;
+	return workspace?.fsPath;
+}
+
+function activeWorkspaceUri(announce = true): vscode.Uri | undefined {
+	const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
+	if (workspace === undefined && announce) {
+		vscode.window.showWarningMessage('Open a workspace folder before using Model Logger.');
+	}
+	return workspace;
 }
 
 function configuredCodexDurationMinutes(): number {
@@ -303,6 +474,11 @@ function configuredCodexDurationMinutes(): number {
 function configuredCodexTokenBudget(): number {
 	const value = vscode.workspace.getConfiguration('model-worklog').get<number>('codex.defaultTokenBudget', 50_000);
 	return Number.isInteger(value) && value >= 1 && value <= 2_000_000 ? value : 50_000;
+}
+
+function configuredCopilotDurationMinutes(): number {
+	const value = vscode.workspace.getConfiguration('model-worklog').get<number>('copilot.defaultDurationMinutes', 30);
+	return Number.isInteger(value) && value >= 1 && value <= 240 ? value : 30;
 }
 
 async function refreshSessions(url: URL, sessionView: SidebarLogView, announce: boolean): Promise<readonly SupervisorSession[]> {
@@ -329,6 +505,16 @@ function updateSelectedDetails(detailsView: LogDetailsView, sessions: readonly S
 	const selected = sessions.find((session) => session.sessionId === selectedSessionId);
 	if (selected !== undefined) {
 		detailsView.updateSession(selected);
+	}
+}
+
+async function openLatestLogWhenUnselected(sessionView: SidebarLogView, detailsView: LogDetailsView, url: URL, sessions: readonly SupervisorSession[], followerState: LogFollowerState): Promise<void> {
+	if (detailsView.selectedSessionId !== undefined) {
+		return;
+	}
+	const latest = sessions.find((session) => sessionView.getSession(session.sessionId) !== undefined);
+	if (latest !== undefined) {
+		await viewLogInDetails(sessionView, detailsView, url, latest.sessionId, followerState);
 	}
 }
 

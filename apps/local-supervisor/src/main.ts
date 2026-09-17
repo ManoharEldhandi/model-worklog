@@ -23,7 +23,12 @@ function resolveHost(raw: string | undefined): string {
 
 async function main(): Promise<void> {
 	const port = resolvePort(process.env.MODEL_WORKLOG_SUPERVISOR_PORT);
-	const running = await startSupervisor({ version: SUPERVISOR_VERSION, host: resolveHost(process.env.MODEL_WORKLOG_SUPERVISOR_HOST), port });
+	const running = await startSupervisor({
+		version: SUPERVISOR_VERSION,
+		host: resolveHost(process.env.MODEL_WORKLOG_SUPERVISOR_HOST),
+		port,
+		shutdownWhenNoExtensionClients: process.env.MODEL_WORKLOG_SHUTDOWN_WHEN_IDLE === '1',
+	});
 	process.stderr.write(`model-worklog supervisor ${SUPERVISOR_VERSION} listening on ${running.url} (instance ${running.instanceId})\n`);
 
 	let closing = false;

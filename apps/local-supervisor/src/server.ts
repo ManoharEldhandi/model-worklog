@@ -7,6 +7,7 @@ import { buildHealthResponse, createIdentity } from './health';
 import { route } from './router';
 import { SupervisorService } from './service';
 import type { CodexRelayFactory } from './codexRelay';
+import type { CopilotRelayFactory } from './copilotRelay';
 import { defaultDataDirectory } from './state';
 import { SUPERVISOR_VERSION } from './version';
 
@@ -24,6 +25,10 @@ export interface StartOptions {
 	readonly authToken?: string;
 	/** Test-only relay override. Production uses the supervisor-owned Codex relay. */
 	readonly codexRelayFactory?: CodexRelayFactory;
+	/** Test-only relay override. Production uses the supervisor-owned Copilot CLI relay. */
+	readonly copilotRelayFactory?: CopilotRelayFactory;
+	/** Stops this supervisor after its final VS Code extension lease is released. */
+	readonly shutdownWhenNoExtensionClients?: boolean;
 }
 
 export interface RunningSupervisor {
@@ -118,12 +123,25 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 
 	const identity = createIdentity(options.version ?? SUPERVISOR_VERSION, options.now?.() ?? new Date());
 	const health = buildHealthResponse(identity);
+	let close: (() => Promise<void>) | undefined;
+	let shutdownRequested = false;
 	const service = await SupervisorService.open({
 		dataDirectory: options.dataDirectory ?? defaultDataDirectory(),
 		authToken: options.authToken,
 		instanceId: identity.instanceId,
 		now: options.now,
 		codexRelayFactory: options.codexRelayFactory,
+		copilotRelayFactory: options.copilotRelayFactory,
+		shutdownWhenNoExtensionClients: options.shutdownWhenNoExtensionClients,
+		requestShutdown: () => {
+			if (shutdownRequested) {
+				return;
+			}
+			shutdownRequested = true;
+			setTimeout(() => {
+				void close?.();
+			}, 0);
+		},
 	});
 	const server: Server = createServer({ maxHeaderSize: 8 * 1024 }, createRequestListener(health, service));
 	server.headersTimeout = 10_000;
@@ -148,30 +166,35 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 	}
 
 	const address = server.address() as AddressInfo;
+	let closePromise: Promise<void> | undefined;
+	close = (): Promise<void> => {
+		closePromise ??= (async () => {
+			try {
+				await new Promise<void>((resolve, reject) => {
+					if (!server.listening) {
+						resolve();
+						return;
+					}
+					server.close((error) => {
+						if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
+							reject(error);
+						} else {
+							resolve();
+						}
+					});
+				});
+			} finally {
+				await service.close();
+			}
+		})();
+		return closePromise;
+	};
 	return {
 		url: formatUrl(host, address.port),
 		host,
 		port: address.port,
 		instanceId: identity.instanceId,
 		authToken: service.token,
-		close: async (): Promise<void> => {
-			try {
-				await new Promise<void>((resolve, reject) => {
-				if (!server.listening) {
-					resolve();
-					return;
-				}
-				server.close((error) => {
-					if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
-						reject(error);
-					} else {
-						resolve();
-					}
-				});
-				});
-			} finally {
-				await service.close();
-			}
-		},
+		close,
 	};
 }

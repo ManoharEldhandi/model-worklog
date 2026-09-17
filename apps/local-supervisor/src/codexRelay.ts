@@ -7,6 +7,7 @@ import { normalizeOpenAIUsage } from 'model-worklog-sdk';
 import type { JsonObject, SessionState, TokenUsage } from 'model-worklog-schema';
 
 import type { EventDraft } from './ledger';
+import { SUPERVISOR_VERSION } from './version';
 
 const REQUEST_TIMEOUT_MS = 12_000;
 const INTERRUPT_GRACE_MS = 3_000;
@@ -204,7 +205,7 @@ export class CodexAppServerRelay {
 				});
 			});
 
-			await this.request('initialize', { clientInfo: { name: 'model-worklog', title: 'Model Logger', version: '0.1.0' } });
+			await this.request('initialize', { clientInfo: { name: 'model-worklog', title: 'Model Logger', version: SUPERVISOR_VERSION } });
 			this.send({ method: 'initialized', params: {} });
 			const started = asRecord(await this.request('thread/start', {
 				cwd: this.options.workspacePath,

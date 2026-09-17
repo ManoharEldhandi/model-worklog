@@ -10,7 +10,7 @@ model-worklog supervisor start
 model-worklog workspace trust .
 ```
 
-The VS Code extension performs the same startup and workspace registration after **Enable Model Logger**. Use the CLI for scripts, CI, or custom integrations outside VS Code.
+The VS Code extension performs the same startup and workspace registration after **Enable Model Logger**, then obtains a renewable client lease for the trusted workspace. It installs a dedicated user-level Copilot CLI hook so that future normal Copilot CLI sessions report documented prompt, tool, result, error, and lifecycle events to the local supervisor. Restart a Copilot CLI process after enabling Logger because Copilot loads user hooks at CLI startup. Use **Start Interactive Copilot CLI** when an ordinary interactive Copilot session also needs final token totals: it opens the normal terminal UI with documented metadata-only OpenTelemetry export for that one session. If the extension launched the supervisor, it exits only after the final enabled VS Code client releases its lease and all live sessions have completed. A supervisor started by the CLI remains available after the extension disables. Enable does not create filesystem or terminal logs: activity appears only when a supported agent adapter supplies documented events. Use the CLI for scripts, CI, or custom integrations outside VS Code.
 
 ## SDK Setup
 
@@ -36,7 +36,7 @@ Model Logger preserves one redacted log stream, then offers two views of the
 same activity. Give each integration a `title` when it starts a session; that
 task name appears in log lists and becomes the default JSON download filename.
 
-- **Text log:** VS Code **View Log**, `model-worklog logs <session-id> --format pretty`, and `model-worklog watch <session-id> --format pretty` describe visible requests, plans, reasoning summaries, tools, arguments, results, files, commands, tests, output, token counts, and lifecycle in readable language. In VS Code, View Log opens the selected log in one bottom Model Logger panel without moving editor focus; its sectioned content updates while the session runs and places Tokens Used last.
+- **Text log:** VS Code **View Log**, `model-worklog logs <session-id> --format pretty`, and `model-worklog watch <session-id> --format pretty` describe visible requests, plans, reasoning summaries, tools, arguments, results, files, commands, tests, output, token counts, and lifecycle in readable language. In VS Code, View Log opens the selected log in one bottom Model Logger panel without moving editor focus; its sectioned content updates while the session runs, previews long entry bodies in two lines with an expand control, and places Tokens Used last.
 - **Structured JSON:** `logs --format json` returns the session plus canonical events. `logs --format jsonl` and `watch --format jsonl` emit one canonical event per line for pipelines. `export <session-id> --output log.json` creates a portable evidence bundle with the session, all events, workspace snapshots, cost report, export-redaction metadata, and a SHA-256 manifest.
 
 All JSON has already passed through supervisor redaction. The text view is a
@@ -146,11 +146,20 @@ plans, tool callbacks, file operations, command results, and provider responses.
 | Agent or provider | Integration path | What is retained |
 | --- | --- | --- |
 | Codex App Server | Use VS Code **Log a Codex Task** or `POST /v1/codex-sessions`. | Direct documented events as `observed-native`, plus process lifecycle as `observed-boundary`. |
+| GitHub Copilot CLI task | Use VS Code **Log a Copilot CLI Task** or `POST /v1/copilot-sessions`. | Documented JSON message/tool events and OpenTelemetry usage spans as `observed-native`, plus process lifecycle as `observed-boundary`. |
+| GitHub Copilot CLI interactive | Use VS Code **Start Interactive Copilot CLI**. | Hook-supplied visible activity as `model-declared`, plus final documented metadata-only OpenTelemetry usage spans as `observed-native`. |
+| GitHub Copilot CLI personal hook | Enable Model Logger, then start a new normal Copilot CLI session in the trusted workspace. | Hook-supplied user prompts, tool activity/results, errors, and lifecycle as `model-declared`. Token counters are unavailable unless the tracked interactive or direct task launcher is used. |
 | Claude Code | Bridge documented hook payloads with `ClaudeCodeAdapter` and a `WorklogSession`. | Hook-reported lifecycle, instruction, tool, file, and visible summary events as `model-declared`. |
-| GitHub Copilot | Call the generic SDK from your Copilot-based agent, extension integration, or tool wrapper where visible events are available. | The events your integration supplies as `model-declared`. VS Code Copilot Chat is not passively captured. |
+| GitHub Copilot | Call the generic SDK from a Copilot-based agent, extension integration, or tool wrapper where documented visible events are available. | Integration-supplied events are `model-declared`. VS Code Copilot Chat messages and tools are not passively captured. |
 | OpenAI or OpenAI-compatible | Use the generic SDK around tool execution and pass the final response to `reportProviderUsage('openai', response)`. | Visible activity and provider token usage as `model-declared`. |
 | Gemini | Use the generic SDK around tool execution and pass the final response to `reportProviderUsage('gemini', response)`. | Visible activity and provider token usage as `model-declared`. |
 | Other agents and frameworks | Call the same SDK methods from the agent loop or framework callbacks. Use `TokenUsageMapping` for an unrecognized usage response. | Only events the integration actually reports, marked `model-declared`; unsupported visibility is `unknown`. |
+
+## Agent Visibility
+
+Model Logger does not attempt passive capture of VS Code Copilot Chat, arbitrary model CLIs, filesystem changes, or terminal buffers. Those sources cannot prove which agent initiated an action and do not safely expose the model's visible tool stream.
+
+To capture real agent activity, use a documented adapter, hook, or SDK integration at the point where the agent emits visible messages, plans, tool calls, files, commands, results, and provider usage. Codex App Server and GitHub Copilot CLI are direct adapters. The Copilot relay launches `copilot --prompt` with its documented JSON event stream and metadata-only OpenTelemetry file export; it never enables prompt/response content capture in telemetry. Enable also installs one dedicated Copilot CLI user hook, which gives normal future `copilot` sessions structured prompt and tool lifecycle logs while Logger is enabled. Claude Code hooks and other SDK integrations are recorded as `model-declared`. VS Code Copilot Chat has no passive event capture path; it needs a documented GitHub event surface or an explicit SDK/tool-wrapper integration. Model Logger never retains raw private chain-of-thought; it keeps only a provider-visible reasoning summary where an adapter exposes one.
 
 ## Codex
 

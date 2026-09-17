@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { ClaudeCodeAdapter, CodexAppServerAdapter, type AdapterEventSink } from './vendorAdapters';
+import { ClaudeCodeAdapter, CodexAppServerAdapter, CopilotCliAdapter, CopilotCliHookAdapter, CopilotCliInteractiveAdapter, type AdapterEventSink } from './vendorAdapters';
 
 class RecordingSink implements AdapterEventSink {
 	readonly calls: { readonly method: string; readonly payload: unknown; readonly correlationId?: string }[] = [];
@@ -36,7 +39,7 @@ test('Claude Code hook adapter maps tool, file, instruction, and lifecycle evide
 
 	assert.deepEqual(sink.calls, [
 		{ method: 'adapter.lifecycle', payload: { adapter: 'claude-code', phase: 'session-started', vendorSessionId: 'claude-session', source: 'startup', model: 'claude-sonnet' } },
-		{ method: 'agent.message', payload: { text: 'Fix the test.' }, correlationId: 'prompt-1' },
+		{ method: 'agent.message', payload: { role: 'user', text: 'Fix the test.' }, correlationId: 'prompt-1' },
 		{ method: 'instruction.loaded', payload: { adapter: 'claude-code', path: 'CLAUDE.md', memoryType: 'Project', loadReason: 'session_start' } },
 		{ method: 'tool.called', payload: { tool: 'Edit', arguments: { file_path: '/workspace/src/app.ts' } }, correlationId: 'tool-1' },
 		{ method: 'tool.completed', payload: { tool: 'Edit', success: true, result: { type: 'update' } }, correlationId: 'tool-1' },
@@ -114,5 +117,89 @@ test('adapter read tools emit a separate file-read event with the workspace-rela
 	assert.deepEqual(sink.calls.filter((call) => call.method === 'file.read'), [
 		{ method: 'file.read', payload: { path: 'src/app.ts', tool: 'Read' }, correlationId: 'read_1' },
 		{ method: 'file.read', payload: { path: 'src/test.ts', tool: 'read_file' }, correlationId: 'read_2' },
+	]);
+});
+
+test('adapter read tools distinguish existing workspace directories from files', async () => {
+	const workspacePath = await mkdtemp(join(tmpdir(), 'model-worklog-read-target-'));
+	const directoryPath = join(workspacePath, 'docs');
+	const filePath = join(workspacePath, 'README.md');
+	try {
+		await mkdir(directoryPath);
+		await writeFile(filePath, '# Readme\n', 'utf8');
+		const sink = new RecordingSink();
+		const adapter = new CopilotCliHookAdapter(sink, { workspacePath });
+		await adapter.ingestHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_use_id: 'directory', tool_input: { path: directoryPath } });
+		await adapter.ingestHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_use_id: 'file', tool_input: { path: filePath } });
+		assert.deepEqual(sink.calls.filter((call) => call.method === 'file.read'), [
+			{ method: 'file.read', payload: { path: 'docs', tool: 'Read', pathType: 'directory' }, correlationId: 'directory' },
+			{ method: 'file.read', payload: { path: 'README.md', tool: 'Read', pathType: 'file' }, correlationId: 'file' },
+		]);
+	} finally {
+		await rm(workspacePath, { recursive: true, force: true });
+	}
+});
+
+test('Copilot CLI adapter records visible messages and tools while suppressing raw reasoning', async () => {
+	const sink = new RecordingSink();
+	const adapter = new CopilotCliAdapter(sink, { workspacePath: '/workspace' });
+	await adapter.ingestEvent({ type: 'user.message', data: { turnId: 'turn-1', content: 'Inspect the failing test.' } });
+	await adapter.ingestEvent({ type: 'assistant.turn_start', data: { turnId: 'turn-1' } });
+	await adapter.ingestEvent({ type: 'assistant.message', data: { turnId: 'turn-1', content: 'I will read the test first.' } });
+	await adapter.ingestEvent({ type: 'assistant.reasoning', data: { turnId: 'turn-1', content: 'private reasoning' } });
+	await adapter.ingestEvent({ type: 'assistant.reasoning', data: { turnId: 'turn-1', content: 'more private reasoning' } });
+	await adapter.ingestEvent({ type: 'tool.execution_start', data: { turnId: 'turn-1', toolCallId: 'tool-1', toolName: 'edit_file', arguments: { path: '/workspace/src/app.ts' } } });
+	await adapter.ingestEvent({ type: 'tool.execution_complete', data: { turnId: 'turn-1', toolCallId: 'tool-1', success: true, result: { changed: true } } });
+	await adapter.ingestEvent({ type: 'assistant.message', data: { turnId: 'turn-1', content: 'The test is fixed.' } });
+	await adapter.ingestEvent({ type: 'result', exitCode: 0 });
+
+	assert.deepEqual(sink.calls, [
+		{ method: 'agent.message', payload: { role: 'user', text: 'Inspect the failing test.', source: 'copilot-cli' }, correlationId: 'turn-1' },
+		{ method: 'adapter.lifecycle', payload: { adapter: 'copilot-cli', phase: 'assistant-turn-start' }, correlationId: 'turn-1' },
+		{ method: 'agent.message', payload: { role: 'assistant', text: 'I will read the test first.', source: 'copilot-cli' }, correlationId: 'turn-1' },
+		{ method: 'unknown:agent.summary:redacted', payload: { adapter: 'copilot-cli', type: 'assistant.reasoning', message: 'Raw model reasoning is not retained. Copilot did not provide a separate visible reasoning summary for this turn.' } },
+		{ method: 'tool.called', payload: { tool: 'edit_file', arguments: { path: '/workspace/src/app.ts' } }, correlationId: 'tool-1' },
+		{ method: 'tool.completed', payload: { tool: 'edit_file', success: true, result: { changed: true } }, correlationId: 'tool-1' },
+		{ method: 'file.changed', payload: { path: 'src/app.ts', operation: 'modified' }, correlationId: 'tool-1' },
+		{ method: 'agent.message', payload: { role: 'assistant', text: 'The test is fixed.', source: 'copilot-cli' }, correlationId: 'turn-1' },
+		{ method: 'adapter.lifecycle', payload: { adapter: 'copilot-cli', phase: 'result', exitCode: 0 } },
+	]);
+});
+
+test('Copilot CLI hook adapter preserves documented post-tool results', async () => {
+	const sink = new RecordingSink();
+	const adapter = new CopilotCliHookAdapter(sink, { workspacePath: '/workspace' });
+	await adapter.ingestHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_use_id: 'tool-1', tool_input: { file_path: '/workspace/src/app.ts' } });
+	await adapter.ingestHook({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_use_id: 'tool-1', tool_input: { file_path: '/workspace/src/app.ts' }, tool_result: { result_type: 'success', text_result_for_llm: 'contents' } });
+	assert.deepEqual(sink.calls, [
+		{ method: 'tool.called', payload: { tool: 'Read', arguments: { file_path: '/workspace/src/app.ts' } }, correlationId: 'tool-1' },
+		{ method: 'file.read', payload: { path: 'src/app.ts', tool: 'Read' }, correlationId: 'tool-1' },
+		{ method: 'tool.completed', payload: { tool: 'Read', success: true, result: { result_type: 'success', text_result_for_llm: 'contents' } }, correlationId: 'tool-1' },
+	]);
+});
+
+test('Copilot CLI hook adapter completes a finished agent turn', async () => {
+	const sink = new RecordingSink();
+	const adapter = new CopilotCliHookAdapter(sink);
+	const result = await adapter.ingestHook({ hook_event_name: 'Stop', session_id: 'copilot-session', last_assistant_message: 'The focused test passed.' });
+	assert.deepEqual(result, { emitted: 3, completed: true });
+	assert.deepEqual(sink.calls, [
+		{ method: 'agent.summary', payload: { summary: 'The focused test passed.' } },
+		{ method: 'adapter.lifecycle', payload: { adapter: 'copilot-cli-hook', phase: 'turn-completed' } },
+		{ method: 'complete', payload: 'completed' },
+	]);
+});
+
+test('tracked interactive Copilot CLI adapter waits for final telemetry before completing', async () => {
+	const sink = new RecordingSink();
+	const adapter = new CopilotCliInteractiveAdapter(sink);
+	const stop = await adapter.ingestHook({ hook_event_name: 'Stop', session_id: 'copilot-session', last_assistant_message: 'The focused test passed.' });
+	const ended = await adapter.ingestHook({ hook_event_name: 'SessionEnd', session_id: 'copilot-session', reason: 'exit' });
+	assert.deepEqual(stop, { emitted: 2, completed: false });
+	assert.deepEqual(ended, { emitted: 1, completed: false });
+	assert.deepEqual(sink.calls, [
+		{ method: 'agent.summary', payload: { summary: 'The focused test passed.' } },
+		{ method: 'adapter.lifecycle', payload: { adapter: 'copilot-cli-interactive', phase: 'turn-completed' } },
+		{ method: 'adapter.lifecycle', payload: { adapter: 'copilot-cli-interactive', phase: 'session-ended', reason: 'exit' } },
 	]);
 });

@@ -24,6 +24,7 @@ export const EVENT_KINDS = [
 	'command.completed',
 	'file.read',
 	'file.changed',
+	'workspace.changed',
 	'workspace.diff',
 	'test.completed',
 	'usage.reported',

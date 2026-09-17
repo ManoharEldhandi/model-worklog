@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 
+import { CopilotCliHookAdapter, CopilotCliInteractiveAdapter, type AdapterEventSink } from 'model-worklog-sdk';
 import {
 	isEventKind,
 	isEvidenceGrade,
@@ -21,6 +22,7 @@ import {
 
 import { FileEvidenceLedger, workspaceReference, type EvidenceLedger } from './ledger';
 import { createCodexRelay, type CodexRelayControl, type CodexRelayFactory } from './codexRelay';
+import { copilotTelemetryUsage, createCopilotRelay, type CopilotRelayControl, type CopilotRelayFactory } from './copilotRelay';
 import { createEvidenceBundle, verifyEvidenceBundle } from './evidenceBundle';
 import { calculateCostReport } from './pricing';
 import { acquireExclusiveStoreLock, createOrLoadAuthToken, readTrustedWorkspaces, tokensMatch, writeTrustedWorkspaces, type StoreLock, type TrustedWorkspace } from './state';
@@ -33,6 +35,8 @@ const MAX_CODEX_DURATION_MS = 4 * 60 * 60 * 1_000;
 const DEFAULT_CODEX_TOKEN_BUDGET = 50_000;
 const MAX_CODEX_TOKEN_BUDGET = 2_000_000;
 const MANAGED_RUN_INTERRUPT_GRACE_MS = 3_000;
+const EXTENSION_CLIENT_LEASE_MS = 30_000;
+const INTERACTIVE_COPILOT_USAGE_TIMEOUT_MS = 30_000;
 
 export interface ApiRequest {
 	readonly method: string;
@@ -54,6 +58,11 @@ export interface SupervisorServiceOptions {
 	readonly now?: () => Date;
 	readonly ledger?: EvidenceLedger;
 	readonly codexRelayFactory?: CodexRelayFactory;
+	readonly copilotRelayFactory?: CopilotRelayFactory;
+	/** Enables idle shutdown only for a supervisor spawned by the VS Code extension. */
+	readonly shutdownWhenNoExtensionClients?: boolean;
+	/** Invoked after the final extension-client lease expires or is released. */
+	readonly requestShutdown?: () => void;
 }
 
 interface CreateSessionBody {
@@ -76,6 +85,25 @@ interface CodexSessionBody {
 	readonly model?: string;
 	readonly maxDurationMs: number;
 	readonly maxTokens: number;
+}
+
+interface CopilotSessionBody {
+	readonly workspacePath: string;
+	readonly task: string;
+	readonly model?: string;
+	readonly maxDurationMs: number;
+}
+
+interface CopilotInteractiveSessionBody {
+	readonly workspacePath: string;
+	readonly vendorSessionId: string;
+}
+
+interface CopilotHookSession {
+	readonly sessionId: string;
+	readonly adapter: CopilotCliHookAdapter | CopilotCliInteractiveAdapter;
+	readonly interactive: boolean;
+	completionTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface TrustedWorkspaceResult {
@@ -163,6 +191,19 @@ function optionalBoundedInteger(body: Record<string, unknown>, key: string, fall
 		throw new Error(`${key} must be an integer between ${minimum} and ${maximum}`);
 	}
 	return value;
+}
+
+function extensionClientId(value: unknown): string {
+	const body = asRecord(value);
+	const clientId = body === undefined ? undefined : requiredString(body, 'clientId');
+	if (clientId === undefined || !/^[a-zA-Z0-9_-]{1,128}$/.test(clientId)) {
+		throw new Error('clientId must contain only letters, digits, underscores, and hyphens');
+	}
+	return clientId;
+}
+
+function validExtensionClientId(clientId: string): boolean {
+	return /^[a-zA-Z0-9_-]{1,128}$/.test(clientId);
 }
 
 function stringArray(body: Record<string, unknown>, key: string): string[] | undefined {
@@ -312,17 +353,25 @@ export class SupervisorService {
 		private readonly now: () => Date,
 		private readonly storeLock: StoreLock,
 		private readonly codexRelayFactory: CodexRelayFactory,
+		private readonly copilotRelayFactory: CopilotRelayFactory,
+		private readonly shutdownWhenNoExtensionClients: boolean,
+		private readonly requestShutdown: (() => void) | undefined,
 	) {}
 
 	private readonly codexRelays = new Map<string, CodexRelayControl>();
+	private readonly copilotRelays = new Map<string, CopilotRelayControl>();
+	private readonly copilotHookSessions = new Map<string, CopilotHookSession>();
+	private readonly copilotHookStarts = new Map<string, Promise<CopilotHookSession | undefined>>();
+	private readonly copilotInteractiveSessions = new Map<string, string>();
 	private readonly managedRuns = new Map<string, ManagedRunControl>();
+	private readonly extensionClientLeases = new Map<string, ReturnType<typeof setTimeout>>();
 
 	static async open(options: SupervisorServiceOptions): Promise<SupervisorService> {
 		const storeLock = await acquireExclusiveStoreLock(options.dataDirectory, options.instanceId ?? `sup_${randomUUID()}`);
 		try {
 			const token = await createOrLoadAuthToken(options.dataDirectory, options.authToken);
 			const ledger = options.ledger ?? await FileEvidenceLedger.open(options.dataDirectory, options.now);
-			const service = new SupervisorService(options.dataDirectory, token, ledger, options.now ?? (() => new Date()), storeLock, options.codexRelayFactory ?? createCodexRelay);
+			const service = new SupervisorService(options.dataDirectory, token, ledger, options.now ?? (() => new Date()), storeLock, options.codexRelayFactory ?? createCodexRelay, options.copilotRelayFactory ?? createCopilotRelay, options.shutdownWhenNoExtensionClients ?? false, options.requestShutdown);
 			await service.recoverInterruptedSessions();
 			return service;
 		} catch (error) {
@@ -337,8 +386,18 @@ export class SupervisorService {
 
 	async close(): Promise<void> {
 		const managedRuns = [...this.managedRuns.entries()];
+		for (const session of this.copilotHookSessions.values()) {
+			if (session.completionTimer !== undefined) {
+				clearTimeout(session.completionTimer);
+			}
+		}
+		for (const lease of this.extensionClientLeases.values()) {
+			clearTimeout(lease);
+		}
+		this.extensionClientLeases.clear();
 		await Promise.all([
 			...[...this.codexRelays.values()].map((relay) => relay.shutdown()),
+			...[...this.copilotRelays.values()].map((relay) => relay.shutdown()),
 			...managedRuns.map(([sessionId, control]) => this.interruptManagedRun(sessionId, control, 'supervisor-shutdown')),
 		]);
 		await Promise.all(managedRuns.map(([, control]) => control.completion));
@@ -360,6 +419,13 @@ export class SupervisorService {
 			if (request.method === 'POST' && request.pathname === '/v1/workspaces/status') {
 				return this.workspaceStatus(request.body);
 			}
+			if (request.method === 'POST' && request.pathname === '/v1/extension-clients') {
+				return this.registerExtensionClient(request.body);
+			}
+			const extensionClientMatch = /^\/v1\/extension-clients\/([^/]+)$/.exec(request.pathname);
+			if (extensionClientMatch?.[1] !== undefined && request.method === 'DELETE') {
+				return this.releaseExtensionClient(decodeURIComponent(extensionClientMatch[1]));
+			}
 			if (request.method === 'POST' && request.pathname === '/v1/sessions') {
 				return this.createSession(request.body);
 			}
@@ -368,6 +434,18 @@ export class SupervisorService {
 			}
 			if (request.method === 'POST' && request.pathname === '/v1/codex-sessions') {
 				return this.startCodexSession(request.body);
+			}
+			if (request.method === 'POST' && request.pathname === '/v1/copilot-sessions') {
+				return this.startCopilotSession(request.body);
+			}
+			if (request.method === 'POST' && request.pathname === '/v1/copilot-interactive-sessions') {
+				return this.startCopilotInteractiveSession(request.body);
+			}
+			if (request.method === 'POST' && request.pathname === '/v1/copilot-hook-events') {
+				return this.ingestCopilotHookEvent(request.body);
+			}
+			if (request.method === 'POST' && request.pathname === '/v1/copilot-interactive-usage') {
+				return this.ingestCopilotInteractiveUsage(request.body);
 			}
 			if (request.method === 'POST' && request.pathname === '/v1/evidence-bundles/verify') {
 				return this.verifyEvidenceBundle(request.body);
@@ -427,6 +505,55 @@ export class SupervisorService {
 		return ok({ schemaVersion: 1, workspace, trusted });
 	}
 
+	private registerExtensionClient(body: unknown): ApiResult {
+		const clientId = extensionClientId(body);
+		const existing = this.extensionClientLeases.get(clientId);
+		if (existing !== undefined) {
+			clearTimeout(existing);
+		}
+		const lease = setTimeout(() => {
+			this.expireExtensionClient(clientId);
+		}, EXTENSION_CLIENT_LEASE_MS);
+		this.extensionClientLeases.set(clientId, lease);
+		return ok({ schemaVersion: 1, clientId, registered: true, activeClients: this.extensionClientLeases.size, leaseDurationMs: EXTENSION_CLIENT_LEASE_MS });
+	}
+
+	private async releaseExtensionClient(clientId: string): Promise<ApiResult> {
+		if (!validExtensionClientId(clientId)) {
+			throw new Error('clientId must contain only letters, digits, underscores, and hyphens');
+		}
+		const existing = this.extensionClientLeases.get(clientId);
+		if (existing !== undefined) {
+			clearTimeout(existing);
+			this.extensionClientLeases.delete(clientId);
+		}
+		this.requestShutdownWhenIdle();
+		return ok({ schemaVersion: 1, clientId, released: true, activeClients: this.extensionClientLeases.size });
+	}
+
+	private expireExtensionClient(clientId: string): void {
+		void this.releaseExtensionClient(clientId);
+	}
+
+	private requestShutdownWhenIdle(): void {
+		if (!this.shutdownWhenNoExtensionClients || this.extensionClientLeases.size !== 0 || this.requestShutdown === undefined) {
+			return;
+		}
+		setTimeout(() => {
+			void this.shutdownWhenSessionsComplete();
+		}, 0);
+	}
+
+	private async shutdownWhenSessionsComplete(): Promise<void> {
+		if (!this.shutdownWhenNoExtensionClients || this.extensionClientLeases.size !== 0 || this.requestShutdown === undefined) {
+			return;
+		}
+		if ((await this.ledger.listSessions()).some((session) => session.state === 'running')) {
+			return;
+		}
+		this.requestShutdown();
+	}
+
 	private async createSession(body: unknown): Promise<ApiResult> {
 		const parsed = this.parseCreateSessionBody(body);
 		const workspace = await this.resolveTrustedWorkspace(parsed.workspacePath);
@@ -466,11 +593,213 @@ export class SupervisorService {
 				complete: (state) => this.completeWithUsageGap(session.sessionId, state),
 			},
 			{ ...parsed, sessionId: session.sessionId, workspacePath: workspace.workspacePath },
-			(sessionId) => this.codexRelays.delete(sessionId),
+			(sessionId) => {
+				this.codexRelays.delete(sessionId);
+				this.requestShutdownWhenIdle();
+			},
 		);
 		this.codexRelays.set(session.sessionId, relay);
 		void relay.start().catch(() => undefined);
 		return ok({ schemaVersion: 1, session }, 202);
+	}
+
+	private async startCopilotSession(body: unknown): Promise<ApiResult> {
+		const parsed = this.parseCopilotSessionBody(body);
+		const workspace = await this.resolveTrustedWorkspace(parsed.workspacePath);
+		if (!workspace.trusted) {
+			return errorBody('workspace_not_trusted', `workspace ${workspace.label} is not trusted`);
+		}
+		const session = await this.ledger.createSession({ runMode: 'managed', actor: 'copilot-cli', workspacePath: workspace.workspacePath, title: parsed.task });
+		const relay = this.copilotRelayFactory(
+			{
+				append: (draft) => this.ledger.append(session.sessionId, draft),
+				recordUsage: (usage, evidenceGrade) => this.ledger.recordUsage(session.sessionId, usage, { actor: 'copilot-cli', evidenceGrade }),
+				complete: (state) => this.completeWithUsageGap(session.sessionId, state),
+			},
+			{ ...parsed, sessionId: session.sessionId, workspacePath: workspace.workspacePath },
+			(sessionId) => {
+				this.copilotRelays.delete(sessionId);
+				this.requestShutdownWhenIdle();
+			},
+		);
+		this.copilotRelays.set(session.sessionId, relay);
+		void relay.start().catch(() => undefined);
+		return ok({ schemaVersion: 1, session }, 202);
+	}
+
+	private async startCopilotInteractiveSession(body: unknown): Promise<ApiResult> {
+		const parsed = this.parseCopilotInteractiveSessionBody(body);
+		const workspace = await this.resolveTrustedWorkspace(parsed.workspacePath);
+		if (!workspace.trusted) {
+			return errorBody('workspace_not_trusted', `workspace ${workspace.label} is not trusted`);
+		}
+		if (this.copilotHookSessions.has(parsed.vendorSessionId) || this.copilotInteractiveSessions.has(parsed.vendorSessionId)) {
+			throw new Error('a Copilot interactive session already uses this session ID');
+		}
+		const record = await this.ledger.createSession({ runMode: 'observe', actor: 'copilot-cli-interactive', workspacePath: workspace.workspacePath });
+		const adapterSink: AdapterEventSink = {
+			emitEvent: (kind, payload, correlationId) => this.ledger.append(record.sessionId, { kind, actor: 'copilot-cli-interactive', evidenceGrade: 'model-declared', payload, ...(correlationId === undefined ? {} : { correlationId }) }),
+			unknown: (kind, reason, payload = {}) => this.ledger.append(record.sessionId, { kind, actor: 'copilot-cli-interactive', evidenceGrade: 'unknown', unknownReason: reason, payload }),
+			reportProviderUsage: async () => undefined,
+			complete: async (state) => {
+				await this.completeWithUsageGap(record.sessionId, state ?? 'completed');
+				this.clearCopilotInteractiveSession(parsed.vendorSessionId);
+				this.requestShutdownWhenIdle();
+			},
+		};
+		this.copilotHookSessions.set(parsed.vendorSessionId, {
+			sessionId: record.sessionId,
+			adapter: new CopilotCliInteractiveAdapter(adapterSink, { workspacePath: workspace.workspacePath }),
+			interactive: true,
+		});
+		this.copilotInteractiveSessions.set(parsed.vendorSessionId, record.sessionId);
+		await this.ledger.append(record.sessionId, {
+			kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'observed-boundary',
+			payload: { adapter: 'copilot-cli-interactive', phase: 'awaiting-session-start' },
+		});
+		return ok({ schemaVersion: 1, session: await this.ledger.getSession(record.sessionId) }, 202);
+	}
+
+	private async ingestCopilotHookEvent(body: unknown): Promise<ApiResult> {
+		const event = asRecord(body);
+		const hookEvent = event === undefined ? undefined : optionalString(event, 'hook_event_name');
+		const vendorSessionId = event === undefined ? undefined : optionalString(event, 'session_id');
+		if (event === undefined || hookEvent === undefined || vendorSessionId === undefined) {
+			throw new Error('Copilot hook event requires hook_event_name and session_id');
+		}
+		const session = await this.copilotHookSession(vendorSessionId, event, hookEvent);
+		if (session === undefined) {
+			return ok({ schemaVersion: 1, accepted: false });
+		}
+		const result = await session.adapter.ingestHook(event);
+		if (session.interactive && hookEvent === 'SessionEnd' && !result.completed) {
+			this.scheduleInteractiveCopilotCompletion(vendorSessionId, session);
+		}
+		return ok({ schemaVersion: 1, accepted: true, sessionId: session.sessionId, emitted: result.emitted, completed: result.completed });
+	}
+
+	private async ingestCopilotInteractiveUsage(body: unknown): Promise<ApiResult> {
+		const value = asRecord(body);
+		const vendorSessionId = value === undefined ? undefined : requiredString(value, 'vendorSessionId');
+		const telemetry = value?.telemetry;
+		const state = value?.state;
+		if (vendorSessionId === undefined || typeof telemetry !== 'string' || (state !== 'completed' && state !== 'failed' && state !== 'interrupted')) {
+			throw new Error('interactive Copilot usage requires vendorSessionId, telemetry text, and a completed, failed, or interrupted state');
+		}
+		const sessionId = this.copilotInteractiveSessions.get(vendorSessionId);
+		if (sessionId === undefined) {
+			return ok({ schemaVersion: 1, accepted: false });
+		}
+		const session = await this.ledger.getSession(sessionId);
+		if (session === undefined || session.state !== 'running') {
+			this.clearCopilotInteractiveSession(vendorSessionId);
+			return ok({ schemaVersion: 1, accepted: false });
+		}
+		const usage = copilotTelemetryUsage(telemetry);
+		for (const report of usage) {
+			await this.ledger.recordUsage(sessionId, report, { actor: 'copilot-cli', evidenceGrade: 'observed-native' });
+		}
+		if (usage.length === 0) {
+			await this.ledger.recordUsageUnknown(sessionId, 'not-observed');
+		}
+		const completed = await this.completeWithUsageGap(sessionId, state);
+		this.clearCopilotInteractiveSession(vendorSessionId);
+		this.requestShutdownWhenIdle();
+		return ok({ schemaVersion: 1, accepted: true, session: completed, usageReports: usage.length });
+	}
+
+	private async copilotHookSession(vendorSessionId: string, event: Record<string, unknown>, hookEvent: string): Promise<CopilotHookSession | undefined> {
+		const existing = this.copilotHookSessions.get(vendorSessionId);
+		if (existing !== undefined) {
+			return existing;
+		}
+		const pending = this.copilotHookStarts.get(vendorSessionId);
+		if (pending !== undefined) {
+			return pending;
+		}
+		if (this.extensionClientLeases.size === 0) {
+			return undefined;
+		}
+		if (hookEvent !== 'SessionStart' && hookEvent !== 'UserPromptSubmit') {
+			return undefined;
+		}
+		const starting = this.createCopilotHookSession(vendorSessionId, event, hookEvent);
+		this.copilotHookStarts.set(vendorSessionId, starting);
+		try {
+			return await starting;
+		} finally {
+			this.copilotHookStarts.delete(vendorSessionId);
+		}
+	}
+
+	private async createCopilotHookSession(vendorSessionId: string, event: Record<string, unknown>, hookEvent: string): Promise<CopilotHookSession | undefined> {
+		const cwd = requiredString(event, 'cwd');
+		if (cwd === undefined) {
+			return undefined;
+		}
+		const workspace = await this.resolveTrustedWorkspace(cwd);
+		if (!workspace.trusted) {
+			return undefined;
+		}
+		const initialPrompt = optionalString(event, 'initial_prompt');
+		const record = await this.ledger.createSession({
+			runMode: 'observe', actor: 'copilot-cli-hook', workspacePath: workspace.workspacePath,
+			...(initialPrompt === undefined ? {} : { title: initialPrompt }),
+		});
+		const adapterSink: AdapterEventSink = {
+			emitEvent: (kind, payload, correlationId) => this.ledger.append(record.sessionId, { kind, actor: 'copilot-cli-hook', evidenceGrade: 'model-declared', payload, ...(correlationId === undefined ? {} : { correlationId }) }),
+			unknown: (kind, reason, payload = {}) => this.ledger.append(record.sessionId, { kind, actor: 'copilot-cli-hook', evidenceGrade: 'unknown', unknownReason: reason, payload }),
+			reportProviderUsage: async () => undefined,
+			complete: async (state) => {
+				await this.completeWithUsageGap(record.sessionId, state ?? 'completed');
+				this.copilotHookSessions.delete(vendorSessionId);
+				this.requestShutdownWhenIdle();
+			},
+		};
+		const session: CopilotHookSession = {
+			sessionId: record.sessionId,
+			adapter: new CopilotCliHookAdapter(adapterSink, { workspacePath: workspace.workspacePath }),
+			interactive: false,
+		};
+		this.copilotHookSessions.set(vendorSessionId, session);
+		if (hookEvent !== 'SessionStart') {
+			await this.ledger.append(record.sessionId, {
+				kind: 'adapter.lifecycle', actor: 'copilot-cli-hook', evidenceGrade: 'unknown', unknownReason: 'not-observed',
+				payload: { adapter: 'copilot-cli-hook', phase: 'session-start-not-observed', vendorSessionId },
+			});
+		}
+		return session;
+	}
+
+	private scheduleInteractiveCopilotCompletion(vendorSessionId: string, session: CopilotHookSession): void {
+		if (session.completionTimer !== undefined) {
+			return;
+		}
+		session.completionTimer = setTimeout(() => {
+			void this.finishInteractiveCopilotWithoutUsage(vendorSessionId, session.sessionId);
+		}, INTERACTIVE_COPILOT_USAGE_TIMEOUT_MS);
+	}
+
+	private async finishInteractiveCopilotWithoutUsage(vendorSessionId: string, sessionId: string): Promise<void> {
+		if (this.copilotInteractiveSessions.get(vendorSessionId) !== sessionId) {
+			return;
+		}
+		const session = await this.ledger.getSession(sessionId);
+		if (session?.state === 'running') {
+			await this.ledger.recordUsageUnknown(sessionId, 'not-observed');
+			await this.completeWithUsageGap(sessionId, 'completed');
+		}
+		this.clearCopilotInteractiveSession(vendorSessionId);
+		this.requestShutdownWhenIdle();
+	}
+
+	private clearCopilotInteractiveSession(vendorSessionId: string): void {
+		const session = this.copilotHookSessions.get(vendorSessionId);
+		if (session?.completionTimer !== undefined) {
+			clearTimeout(session.completionTimer);
+		}
+		this.copilotHookSessions.delete(vendorSessionId);
+		this.copilotInteractiveSessions.delete(vendorSessionId);
 	}
 
 	private async getSession(sessionId: string): Promise<ApiResult> {
@@ -601,6 +930,7 @@ export class SupervisorService {
 			throw new Error('state must be completed, failed, or interrupted');
 		}
 		const session = await this.completeWithUsageGap(sessionId, state);
+		this.requestShutdownWhenIdle();
 		return ok({ schemaVersion: 1, session });
 	}
 
@@ -618,12 +948,32 @@ export class SupervisorService {
 			return ok({ schemaVersion: 1, session: (await this.ledger.getSession(sessionId))! }, 202);
 		}
 		const relay = this.codexRelays.get(sessionId);
-		if (relay === undefined) {
-			await this.ledger.append(sessionId, { kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'computed', payload: { phase: 'interrupted-after-relay-recovery', message: 'The supervisor no longer owns a live relay for this session.' } });
-			return ok({ schemaVersion: 1, session: await this.completeWithUsageGap(sessionId, 'interrupted') });
+		if (relay !== undefined) {
+			await relay.cancel('user-request');
+			return ok({ schemaVersion: 1, session: (await this.ledger.getSession(sessionId))! }, 202);
 		}
-		await relay.cancel('user-request');
-		return ok({ schemaVersion: 1, session: (await this.ledger.getSession(sessionId))! }, 202);
+		const copilotRelay = this.copilotRelays.get(sessionId);
+		if (copilotRelay !== undefined) {
+			await copilotRelay.cancel('user-request');
+			return ok({ schemaVersion: 1, session: (await this.ledger.getSession(sessionId))! }, 202);
+		}
+		const hookSession = [...this.copilotHookSessions.entries()].find(([, value]) => value.sessionId === sessionId);
+		if (hookSession !== undefined) {
+			if (hookSession[1].interactive) {
+				this.clearCopilotInteractiveSession(hookSession[0]);
+			} else {
+				this.copilotHookSessions.delete(hookSession[0]);
+			}
+			await this.ledger.append(sessionId, {
+				kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'computed',
+				payload: { adapter: 'copilot-cli-hook', phase: 'recording-stopped', message: 'Logger stopped recording this Copilot CLI turn. The Copilot CLI session continues independently.' },
+			});
+			const stopped = await this.completeWithUsageGap(sessionId, 'interrupted');
+			this.requestShutdownWhenIdle();
+			return ok({ schemaVersion: 1, session: stopped }, 202);
+		}
+		await this.ledger.append(sessionId, { kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'computed', payload: { phase: 'interrupted-after-relay-recovery', message: 'The supervisor no longer owns a live relay for this session.' } });
+		return ok({ schemaVersion: 1, session: await this.completeWithUsageGap(sessionId, 'interrupted') });
 	}
 
 	private async completeWithUsageGap(sessionId: string, state: 'completed' | 'failed' | 'interrupted'): Promise<SessionRecord> {
@@ -755,6 +1105,7 @@ export class SupervisorService {
 			}
 			control.child = undefined;
 			this.managedRuns.delete(sessionId);
+			this.requestShutdownWhenIdle();
 		}
 	}
 
@@ -855,5 +1206,33 @@ export class SupervisorService {
 		const maxDurationMs = optionalBoundedInteger(value, 'maxDurationMs', DEFAULT_CODEX_DURATION_MS, 1_000, MAX_CODEX_DURATION_MS);
 		const maxTokens = optionalBoundedInteger(value, 'maxTokens', DEFAULT_CODEX_TOKEN_BUDGET, 1, MAX_CODEX_TOKEN_BUDGET);
 		return { workspacePath, task, ...(model === undefined ? {} : { model }), maxDurationMs, maxTokens };
+	}
+
+	private parseCopilotSessionBody(body: unknown): CopilotSessionBody {
+		const value = asRecord(body);
+		if (value === undefined) {
+			throw new Error('Copilot session body must be an object');
+		}
+		const workspacePath = requiredString(value, 'workspacePath');
+		const task = requiredString(value, 'task');
+		const model = optionalString(value, 'model');
+		if (workspacePath === undefined || task === undefined || task.length > 32_000 || (value.model !== undefined && model === undefined)) {
+			throw new Error('Copilot session requires workspacePath, a task up to 32000 characters, and an optional model');
+		}
+		const maxDurationMs = optionalBoundedInteger(value, 'maxDurationMs', DEFAULT_CODEX_DURATION_MS, 1_000, MAX_CODEX_DURATION_MS);
+		return { workspacePath, task, ...(model === undefined ? {} : { model }), maxDurationMs };
+	}
+
+	private parseCopilotInteractiveSessionBody(body: unknown): CopilotInteractiveSessionBody {
+		const value = asRecord(body);
+		if (value === undefined) {
+			throw new Error('interactive Copilot session body must be an object');
+		}
+		const workspacePath = requiredString(value, 'workspacePath');
+		const vendorSessionId = requiredString(value, 'vendorSessionId');
+		if (workspacePath === undefined || vendorSessionId === undefined || !/^[a-zA-Z0-9_-]{1,128}$/.test(vendorSessionId)) {
+			throw new Error('interactive Copilot session requires workspacePath and a safe vendorSessionId');
+		}
+		return { workspacePath, vendorSessionId };
 	}
 }

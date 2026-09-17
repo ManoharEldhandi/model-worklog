@@ -16,7 +16,7 @@ Source labels explain where a detail came from, not how useful it is. In the VS 
 
 ## What Is Retained
 
-Supported integrations may record visible assistant messages, plans, readable reasoning summaries, tool calls, command activity/output, reviewed files, edits, test results, token usage, adapter failures, and session lifecycle.
+Supported integrations may record visible assistant messages, plans, readable reasoning summaries, tool calls, command activity/output, reviewed files, edits, test results, token usage, adapter failures, and session lifecycle. Model Logger does not persist generic filesystem watcher or VS Code terminal-shell activity as agent evidence. Those events do not establish whether a model, a user, or another process initiated the action.
 
 Private raw reasoning is not retained. When an AI provides raw reasoning, Logger hides it. A provider-supplied readable reasoning summary can be retained separately when exposed.
 

@@ -29,6 +29,8 @@ async function main() {
 		entryPoints: {
 			extension: 'src/extension.ts',
 			supervisor: '../local-supervisor/src/main.ts',
+			'copilot-hook-bridge': 'src/copilotHookBridge.ts',
+			'copilot-interactive-bridge': 'src/copilotInteractiveBridge.ts',
 		},
 		bundle: true,
 		format: 'cjs',
