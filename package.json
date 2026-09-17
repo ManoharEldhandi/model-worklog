@@ -35,7 +35,7 @@
     "pack:check": "npm run build && npm pack --dry-run --workspace model-worklog-schema && npm pack --dry-run --workspace model-worklog-supervisor && npm pack --dry-run --workspace model-worklog && npm pack --dry-run --workspace model-worklog-sdk"
   },
   "devDependencies": {
-    "@types/node": "24.x",
+    "@types/node": "26.x",
     "typescript": "^6.0.3"
   }
 }
