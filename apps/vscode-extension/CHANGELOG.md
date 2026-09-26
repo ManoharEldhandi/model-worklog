@@ -1,6 +1,13 @@
 # Changelog
 
+
 ## Unreleased
+
+## 0.1.15 - 2026-09-27
+
+- Add a branded Model Logger icon for the VS Code Marketplace.
+
+## 0.1.14 - 2026-09-26
 
 - Fix the interactive Copilot CLI launcher under VS Code's Electron extension host and run it as the terminal process. Clarify that VS Code does not expose existing Copilot Chat activity to other extensions.
 - Add **Start Interactive Copilot CLI**, which opens the normal Copilot terminal UI with metadata-only telemetry and records final provider-reported token usage when the session exits.

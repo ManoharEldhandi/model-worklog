@@ -1,11 +1,11 @@
 {
   "name": "model-worklog",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Local-first command-line client for Model Logger",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+    "url": "git+https://github.com/ManoharEldhandi/model-worklog.git"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

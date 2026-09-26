@@ -1,12 +1,12 @@
 {
   "name": "model-worklog-workspace",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "description": "Local AI session logging and review",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ManoharEldhandi/model-worklog.git"
+    "url": "git+https://github.com/ManoharEldhandi/model-worklog.git"
   },
   "engines": {
     "node": ">=22"
