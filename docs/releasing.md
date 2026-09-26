@@ -30,10 +30,14 @@ identifier remain `model-worklog` for compatibility.
 ```sh
 npm ci
 npm run release:check
-npm run extension:test
 npm audit --omit=dev
 npm --prefix apps/vscode-extension audit --omit=dev
 ```
+
+`release:check` runs the SDK, schema, CLI, supervisor, and VS Code extension
+test suites, then validates the publishable package contents and creates the
+VSIX. It must run with all ordinary VS Code windows closed because the VS Code
+test host requires exclusive access on macOS.
 
 Review release notes and set the same new version in the root manifest, all
 four npm package manifests, and `apps/vscode-extension/package.json`. Run

@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
@@ -142,15 +142,26 @@ suite('Evidence bundle API', () => {
 suite('Delete log API', () => {
 	test('sends a delete request and requires a matching completed-log response', async () => {
 		const originalFetch = global.fetch;
+		const originalModelWorklogHome = process.env.MODEL_WORKLOG_HOME;
+		const modelWorklogHome = await mkdtemp(join(tmpdir(), 'model-worklog-delete-log-'));
 		try {
+			process.env.MODEL_WORKLOG_HOME = modelWorklogHome;
+			await writeFile(join(modelWorklogHome, 'auth-token'), 'test-local-supervisor-token\n', 'utf8');
 			global.fetch = async (input, init) => {
 				assert.strictEqual(new URL(input).pathname, '/v1/sessions/ses_demo');
 				assert.strictEqual(init?.method, 'DELETE');
+				assert.strictEqual(new Headers(init?.headers).get('x-model-worklog-token'), 'test-local-supervisor-token');
 				return new Response(JSON.stringify({ sessionId: 'ses_demo', deleted: true }), { status: 200 });
 			};
 			await deleteSession(new URL('http://127.0.0.1:43199'), 'ses_demo');
 		} finally {
 			global.fetch = originalFetch;
+			if (originalModelWorklogHome === undefined) {
+				delete process.env.MODEL_WORKLOG_HOME;
+			} else {
+				process.env.MODEL_WORKLOG_HOME = originalModelWorklogHome;
+			}
+			await rm(modelWorklogHome, { recursive: true, force: true });
 		}
 	});
 });
