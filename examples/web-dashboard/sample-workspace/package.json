@@ -1,0 +1,5 @@
+{
+  "name": "harbor-inventory-sample",
+  "private": true,
+  "type": "module"
+}
