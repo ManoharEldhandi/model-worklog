@@ -697,7 +697,7 @@ export class SupervisorService {
 		}
 		const usage = copilotTelemetryUsage(telemetry);
 		for (const report of usage) {
-			await this.ledger.recordUsage(sessionId, report, { actor: 'copilot-cli', evidenceGrade: 'observed-native' });
+			await this.ledger.recordUsage(sessionId, report, { actor: 'copilot-cli', evidenceGrade: 'model-declared' });
 		}
 		if (usage.length === 0) {
 			await this.ledger.recordUsageUnknown(sessionId, 'not-observed');

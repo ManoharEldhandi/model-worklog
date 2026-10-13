@@ -1,18 +1,19 @@
 # Model Logger
 
-**Local-first activity logs for coding agents.**
+**Private, SDK-first traces for agent workflows.**
 
-Model Logger helps you review the visible work an AI agent does: messages,
-plans, tool calls, commands, file changes, test results, errors, and
-provider-reported token usage. Logs are stored locally as redacted JSON and
-can be reviewed in VS Code or from the command line.
+Wrap your agents, model calls, tools, and retrieval steps with Model Logger.
+Review nested spans, results, usage, errors, and capture gaps in VS Code or
+through the local API. The collector stores redacted traces in SQLite and
+accepts OpenTelemetry over HTTP, including protobuf exporters used by Python.
 
-It does **not** record private chain-of-thought or guess at activity it cannot
-observe.
+Metadata-only capture is the default. Content requires explicit opt-in. Hidden
+reasoning and uninstrumented actions are not observable. This repository's new
+tracing release must be published before these APIs are available from registries.
 
 ## Install
 
-### VS Code
+### SDK And VS Code
 
 Install [Model Logger from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=manohareldhandi.model-worklog), or run:
 
@@ -20,56 +21,58 @@ Install [Model Logger from the VS Code Marketplace](https://marketplace.visualst
 code --install-extension manohareldhandi.model-worklog
 ```
 
-Then open a trusted workspace, run **Model Logger: Enable Model Logger**, and
-open the **Model Logger** view from the Activity Bar.
-
-Use **Log a Codex Task** or **Log a Copilot CLI Task** to start a supported
-session. Codex or GitHub Copilot CLI must already be installed and authenticated
-on the same host as the workspace.
-
-### CLI
-
-Requires Node.js 22 or later.
-
-```sh
-npm install -g model-worklog
-model-worklog supervisor start
-model-worklog workspace trust .
-model-worklog sessions list
-```
-
-To review a session or export its redacted evidence:
-
-```sh
-model-worklog logs <session-id>
-model-worklog export <session-id> --output model-worklog-session.json
-model-worklog verify model-worklog-session.json
-```
-
-### SDK
-
-Use the SDK when you want to connect another agent or application:
+Use the matching locally built VSIX until the tracing release is published.
+Open a trusted workspace, run **Enable Model Logger**, then **Configure SDK
+Logging** in the **Traces** view. Choose a project; setup provisions a scoped
+writer credential without putting it in source code or the webview.
 
 ```sh
 npm install model-worklog-sdk
 ```
 
-The SDK sends structured events to the local supervisor. See the
-[integration guide](docs/integration.md) for setup and examples.
+```ts
+import { createLocalModelLogger } from 'model-worklog-sdk';
 
-## What it records
+const logger = await createLocalModelLogger({ projectId: 'default', serviceName: 'my-agent' });
+const tracedAgent = logger.wrap({ name: 'agent.run', kind: 'agent' }, runAgent);
+try {
+  await tracedAgent(input);
+} finally {
+  const delivery = await logger.shutdown();
+  if (!delivery.success) console.warn('Incomplete telemetry', delivery);
+}
+```
 
-- Visible messages, plans, tools, commands, files, tests, errors, and summaries.
-- Token usage only when the connected provider reports it.
-- Evidence grades that distinguish observed, computed, agent-reported, and
-  unavailable information.
+Use your configured project and application function. No CLI is required.
+For embedded collectors, content opt-in, streams, MCP, and OpenTelemetry, see
+[Integration](docs/integration.md) and the [SDK reference](packages/adapter-sdk/README.md).
+
+### Run From Source
+
+Requires Node.js 22.13 or later. A self-contained example uses an isolated
+collector, actual file operation, scoped credentials, and no AI credits:
+
+```sh
+npm ci
+npm run build
+node examples/sdk-tracing-demo.mjs
+```
+
+Existing Codex/Copilot launchers and legacy CLI session commands remain
+available. They are not required for the new tracing SDK.
+
+## What It Captures
+
+- Instrumented agent, model, tool, MCP, retrieval, embedding, memory, and workflow spans.
+- Parent relationships, links, timing, state, optional redacted content, and reported usage.
+- Capture limitations, redactions, truncation, missing parents, and explicit delivery failures.
 
 ## Privacy
 
-- Logs stay on the machine where the workspace runs.
-- Redaction happens before storage, viewing, or export.
-- The local supervisor listens only on loopback and requires a local token.
-- No telemetry, hosted logging service, or workspace upload is enabled by default.
+- Private local storage, metadata-first capture, and redaction before buffering and storage.
+- Expiring, revocable writer/reader credentials scoped to projects; admin-only management.
+- Bounded queues and storage; retries do not duplicate accepted span revisions.
+- No cloud logging account, upload, global monkey-patching, or hidden-reasoning capture.
 
 Redaction is a safeguard, not a guarantee. Do not intentionally send
 credentials or confidential data to a log.
@@ -77,6 +80,7 @@ credentials or confidential data to a log.
 ## Learn more
 
 - [Integration guide](docs/integration.md)
+- [Product goal and architecture](docs/architecture.md)
 - [Evidence model](docs/evidence-model.md)
 - [Security model](docs/security-model.md)
 - [Release guide](docs/releasing.md)

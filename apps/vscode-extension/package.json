@@ -3,7 +3,7 @@
   "publisher": "manohareldhandi",
   "displayName": "Model Logger",
   "description": "Local-first, redacted AI activity logging and review",
-  "version": "0.1.15",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -88,10 +88,66 @@
         "command": "model-worklog.deleteSession",
         "title": "Delete Saved Log",
         "category": "Model Logger"
+      },
+      {
+        "command": "model-worklog.trace.selectProject",
+        "title": "Select Trace Project",
+        "category": "Model Logger",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "model-worklog.trace.configureSdk",
+        "title": "Configure SDK Logging",
+        "category": "Model Logger",
+        "icon": "$(settings-gear)",
+        "enablement": "modelWorklog.traceAdmin && !modelWorklog.traceBusy"
+      },
+      {
+        "command": "model-worklog.trace.refresh",
+        "title": "Refresh Traces",
+        "category": "Model Logger",
+        "icon": "$(refresh)",
+        "enablement": "modelWorklog.traceEnabled && !modelWorklog.traceBusy"
+      },
+      {
+        "command": "model-worklog.trace.open",
+        "title": "Open Trace",
+        "category": "Model Logger",
+        "enablement": "modelWorklog.traceRead"
+      },
+      {
+        "command": "model-worklog.trace.loadMore",
+        "title": "Load More Traces",
+        "category": "Model Logger",
+        "enablement": "modelWorklog.traceRead && !modelWorklog.traceBusy"
+      },
+      {
+        "command": "model-worklog.trace.loadMoreSpans",
+        "title": "Load More Spans",
+        "category": "Model Logger",
+        "enablement": "modelWorklog.traceRead && modelWorklog.traceSelected && !modelWorklog.traceBusy"
+      },
+      {
+        "command": "model-worklog.trace.export",
+        "title": "Export Captured Trace JSON",
+        "category": "Model Logger",
+        "icon": "$(export)",
+        "enablement": "modelWorklog.traceRead && !modelWorklog.traceBusy"
+      },
+      {
+        "command": "model-worklog.trace.delete",
+        "title": "Delete Trace",
+        "category": "Model Logger",
+        "icon": "$(trash)",
+        "enablement": "modelWorklog.traceAdmin && !modelWorklog.traceBusy"
       }
     ],
     "views": {
       "model-worklog": [
+        {
+          "id": "model-worklog.traces",
+          "name": "Traces"
+        },
         {
           "id": "model-worklog.sessions",
           "name": "Logs"
@@ -99,10 +155,28 @@
       ],
       "model-worklog-details": [
         {
+          "id": "model-worklog.traceDetails",
+          "name": "Trace Details",
+          "type": "webview"
+        },
+        {
           "id": "model-worklog.logDetails",
           "name": "Log Details",
           "type": "webview"
         }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "model-worklog.trace.selectProject", "when": "view == model-worklog.traces", "group": "navigation@1" },
+        { "command": "model-worklog.trace.refresh", "when": "view == model-worklog.traces || view == model-worklog.traceDetails", "group": "navigation@2" },
+        { "command": "model-worklog.trace.configureSdk", "when": "view == model-worklog.traces && modelWorklog.traceAdmin", "group": "navigation@3" },
+        { "command": "model-worklog.trace.export", "when": "view == model-worklog.traceDetails && modelWorklog.traceRead && modelWorklog.traceSelected", "group": "navigation@3" },
+        { "command": "model-worklog.trace.delete", "when": "view == model-worklog.traceDetails && modelWorklog.traceAdmin && modelWorklog.traceSelected", "group": "navigation@4" }
+      ],
+      "view/item/context": [
+        { "command": "model-worklog.trace.export", "when": "view == model-worklog.traces && (viewItem == trace-admin || viewItem == trace-reader)", "group": "inline@1" },
+        { "command": "model-worklog.trace.delete", "when": "view == model-worklog.traces && viewItem == trace-admin", "group": "inline@2" }
       ]
     },
     "viewsContainers": {
@@ -124,6 +198,13 @@
     "configuration": {
       "title": "Model Logger",
       "properties": {
+        "model-worklog.trace.projectId": {
+          "type": "string",
+          "default": "default",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$",
+          "description": "Project displayed in Traces. Applications must explicitly instrument this project using model-worklog-sdk. This setting contains no credential.",
+          "scope": "window"
+        },
         "model-worklog.supervisorUrl": {
           "type": "string",
           "default": "http://127.0.0.1:43199",

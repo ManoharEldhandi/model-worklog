@@ -76,6 +76,30 @@ test('keeps reported usage when a later observation cannot provide token counts'
 	});
 });
 
+test('deduplicates provider response usage across concurrent attempts and reopening', async () => {
+	await withLedger(async (ledger, root) => {
+		const session = await ledger.createSession({ runMode: 'observe', actor: 'retry-test', workspacePath: '/workspace' });
+		const usage = { source: 'provider-reported' as const, provider: 'openai', providerResponseId: 'response-1', inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+		await Promise.all(Array.from({ length: 20 }, () => ledger.recordUsage(session.sessionId, usage)));
+		const firstUsage = (await ledger.getSession(session.sessionId))?.tokenUsage;
+		assert.ok(firstUsage?.status === 'reported');
+		assert.equal(firstUsage.totalTokens, 15);
+		assert.equal((await ledger.listEvents(session.sessionId)).filter((event) => event.kind === 'usage.reported').length, 1);
+		const reopened = await FileEvidenceLedger.open(root);
+		await Promise.all([
+			reopened.recordUsage(session.sessionId, usage),
+			reopened.recordUsage(session.sessionId, usage),
+			reopened.recordUsage(session.sessionId, { ...usage, provider: 'other-provider' }),
+			reopened.recordUsage(session.sessionId, { ...usage, providerResponseId: undefined }),
+			reopened.recordUsage(session.sessionId, { ...usage, providerResponseId: undefined }),
+		]);
+		const restoredUsage = (await reopened.getSession(session.sessionId))?.tokenUsage;
+		assert.ok(restoredUsage?.status === 'reported');
+		assert.equal(restoredUsage.totalTokens, 60);
+		assert.equal((await reopened.listEvents(session.sessionId)).filter((event) => event.kind === 'usage.reported').length, 4);
+	});
+});
+
 test('persists a terminal session state after its final canonical event', async () => {
 	await withLedger(async (ledger) => {
 		const session = await ledger.createSession({ runMode: 'managed', actor: 'boundary', workspacePath: '/workspace' });

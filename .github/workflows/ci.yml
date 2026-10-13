@@ -9,6 +9,19 @@ permissions:
   contents: read
 
 jobs:
+  minimum-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - run: npm run release:versions
+      - run: npm test
+      - run: npm run demo:trace
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -18,8 +31,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run release:versions
       - run: npm audit --omit=dev
       - run: npm test
+      - run: npm run demo:trace
       - run: npm run pack:check
       - run: npm --prefix apps/vscode-extension ci
       - run: npm --prefix apps/vscode-extension audit --omit=dev

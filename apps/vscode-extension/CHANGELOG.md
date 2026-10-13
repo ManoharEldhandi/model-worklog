@@ -3,6 +3,15 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-13
+
+- Add an SDK-first Traces view with nested spans, privacy and coverage details, reported usage, paging, refresh, and safe JSON export.
+- Add project-scoped writer setup with role-gated reader and admin actions. Credentials never enter the webview or settings.
+- Bundle a transactional SQLite trace collector with scoped expiring credentials, quotas, retention, and OpenTelemetry HTTP JSON/protobuf ingestion.
+- Add failure-isolated SDK tracing, stream and MCP wrappers, OpenTelemetry export, bounded retries, and optional redacted disk spooling.
+- Fix lost hook/MCP results, duplicate legacy provider usage, and externally uploaded usage provenance.
+- Require Node.js 22.13 or later for the standalone collector and preserve legacy session integrations.
+
 ## 0.1.15 - 2026-09-27
 
 - Add a branded Model Logger icon for the VS Code Marketplace.

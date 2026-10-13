@@ -203,3 +203,27 @@ test('tracked interactive Copilot CLI adapter waits for final telemetry before c
 		{ method: 'adapter.lifecycle', payload: { adapter: 'copilot-cli-interactive', phase: 'session-ended', reason: 'exit' } },
 	]);
 });
+
+test('hook results preserve strings and arrays without inventing missing results', async () => {
+	const sink = new RecordingSink();
+	const adapter = new ClaudeCodeAdapter(sink);
+	for (const result of ['contents', ['first', 'second'], null, undefined]) {
+		await adapter.ingestHook({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: result });
+	}
+	assert.deepEqual(sink.calls.map((call) => call.payload), [
+		{ tool: 'Read', success: true, result: 'contents' },
+		{ tool: 'Read', success: true, result: ['first', 'second'] },
+		{ tool: 'Read', success: true, result: null },
+		{ tool: 'Read', success: true },
+	]);
+});
+
+test('Codex MCP completion retains server identity and structured results', async () => {
+	const sink = new RecordingSink();
+	await new CodexAppServerAdapter(sink).ingestNotification({ method: 'item/completed', params: {
+		item: { id: 'mcp-1', type: 'mcpToolCall', server: 'search', tool: 'retrieve', status: 'completed', result: { content: [{ type: 'text', text: 'document' }] } },
+	} });
+	assert.deepEqual(sink.calls, [{ method: 'tool.completed', correlationId: 'mcp-1', payload: {
+		tool: 'retrieve', server: 'search', success: true, result: { content: [{ type: 'text', text: 'document' }] },
+	} }]);
+});

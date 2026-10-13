@@ -1,168 +1,162 @@
 # Integration
 
-Model Logger accepts normalized events from any AI provider, tool framework, or agent runtime that can call the local SDK. The SDK connects only to a loopback supervisor using a user-local token.
+Instrument your application with the TypeScript SDK, an OTel exporter, or the
+MCP wrapper; send traces to the same-host collector and inspect them in VS Code.
+No CLI is required. Use Node.js **>=22.13** for the whole JavaScript project.
+This guide targets upcoming **0.2.0**: new tracing packages are not yet published.
+Use the checkout until the operator publishes them; older registry versions may
+not expose these APIs.
 
-## Standalone Setup
+## Operator Bootstrap
 
-```sh
-npm install -g model-worklog
-model-worklog supervisor start
-model-worklog workspace trust .
-```
-
-The VS Code extension performs the same startup and workspace registration after **Enable Model Logger**, then obtains a renewable client lease for the trusted workspace. It installs a dedicated user-level Copilot CLI hook so that future normal Copilot CLI sessions report documented prompt, tool, result, error, and lifecycle events to the local supervisor. Restart a Copilot CLI process after enabling Logger because Copilot loads user hooks at CLI startup. Use **Start Interactive Copilot CLI** when an ordinary interactive Copilot session also needs final token totals: it opens the normal terminal UI with documented metadata-only OpenTelemetry export for that one session. If the extension launched the supervisor, it exits only after the final enabled VS Code client releases its lease and all live sessions have completed. A supervisor started by the CLI remains available after the extension disables. Enable does not create filesystem or terminal logs: activity appears only when a supported agent adapter supplies documented events. Use the CLI for scripts, CI, or custom integrations outside VS Code.
-
-## SDK Setup
-
-Install the SDK in the process that runs your AI system:
+After 0.2.0 publication, install the operator and application packages:
 
 ```sh
-npm install model-worklog-sdk
+npm install model-worklog-supervisor@0.2.0 model-worklog-sdk@0.2.0
 ```
 
-The SDK does not start a supervisor or trust a workspace on behalf of your application. An operator must first start the local supervisor and trust the workspace that the application reports:
+This self-contained JavaScript example owns the collector lifecycle. Admin access
+stays in the operator setup; the logger receives only a writer and queries use a
+separate reader. Do not print or distribute the admin credential.
 
-```sh
-npm install -g model-worklog
-model-worklog supervisor start
-model-worklog workspace trust /absolute/path/to/workspace
-```
+```js
+import { startSupervisor, createTraceCredential } from 'model-worklog-supervisor';
+import { createLocalModelLogger } from 'model-worklog-sdk';
 
-At runtime, `LocalSupervisorClient.fromLocalEnvironment()` reads the supervisor URL from `MODEL_WORKLOG_SUPERVISOR_URL` and the credential from `MODEL_WORKLOG_TOKEN` or `MODEL_WORKLOG_HOME/auth-token`. The URL must be loopback HTTP. Set `MODEL_WORKLOG_HOME` consistently for the supervisor, CLI, and application when using a non-default local store.
-
-## Rich Text And Canonical JSON
-
-Model Logger preserves one redacted log stream, then offers two views of the
-same activity. Give each integration a `title` when it starts a session; that
-task name appears in log lists and becomes the default JSON download filename.
-
-- **Text log:** VS Code **View Log**, `model-worklog logs <session-id> --format pretty`, and `model-worklog watch <session-id> --format pretty` describe visible requests, plans, reasoning summaries, tools, arguments, results, files, commands, tests, output, token counts, and lifecycle in readable language. In VS Code, View Log opens the selected log in one bottom Model Logger panel without moving editor focus; its sectioned content updates while the session runs, previews long entry bodies in two lines with an expand control, and places Tokens Used last.
-- **Structured JSON:** `logs --format json` returns the session plus canonical events. `logs --format jsonl` and `watch --format jsonl` emit one canonical event per line for pipelines. `export <session-id> --output log.json` creates a portable evidence bundle with the session, all events, workspace snapshots, cost report, export-redaction metadata, and a SHA-256 manifest.
-
-All JSON has already passed through supervisor redaction. The text view is a
-human-oriented rendering; the canonical event payload remains available in the
-JSON formats and export bundle.
-
-## Show Logs In Your Application
-
-The same session can drive any local presentation. Use `followEvents()` in the
-Node process that runs the agent to receive every committed, redacted event from
-the beginning of the session through completion. It polls the loopback
-supervisor every 100 ms by default and accepts an `AbortSignal` when a viewer is
-closed.
-
-```ts
-import { LocalSupervisorClient, formatSessionEventText } from 'model-worklog-sdk';
-
-const client = await LocalSupervisorClient.fromLocalEnvironment();
-const session = await client.startSession({
-  workspacePath: process.cwd(),
-  actor: 'my-agent',
+const projectId = 'my-project';
+const privacy = { mode: 'metadata' };
+const supervisor = await startSupervisor({
+  host: '127.0.0.1', port: 0, tracePrivacy: privacy,
 });
-
-// Terminal presentation
-void session.followEvents((event) => {
-  process.stdout.write(`${formatSessionEventText(event).join('\n')}\n`);
-});
-
-// Site or desktop application presentation. Keep this in the trusted backend;
-// send `event` to an authenticated browser connection with your own WebSocket,
-// Server-Sent Events, or framework transport.
-void session.followEvents((event) => {
-  applicationClients.broadcast({ type: 'model-worklog-event', event });
-}, { afterSequence: 0, signal: viewerAbortController.signal });
-```
-
-Do not connect browser code directly to the supervisor and do not expose
-`MODEL_WORKLOG_TOKEN` to a browser. The supervisor is loopback-only by design;
-your application backend decides which authenticated viewers may receive its
-already-redacted events.
-
-## Record A Session
-
-```ts
-import { readFile } from 'node:fs/promises';
-import { LocalSupervisorClient } from 'model-worklog-sdk';
-
-const client = await LocalSupervisorClient.fromLocalEnvironment();
-const session = await client.startSession({
-  workspacePath: process.cwd(),
-  actor: 'my-ai-adapter',
-  title: 'Fix the failing parser test',
-});
-
-await session.userMessage('Fix the failing parser test.');
-await session.plan('Read the parser and test, then make the smallest repair.', [
-  'Read src/parser.ts',
-  'Read src/parser.test.ts',
-  'Run the focused test',
-]);
-await session.reasoningSummary('The expected value appears outdated.');
-
-const contents = await session.runTool(
-  { tool: 'read_file', arguments: { path: 'src/parser.ts' }, correlationId: 'tool_read_1' },
-  () => readFile('src/parser.ts', 'utf8'),
-);
-await session.fileRead({ path: 'src/app.ts', tool: 'read_file' });
-await session.commandStarted({ executable: 'npm', args: ['test'] });
-await session.commandCompleted({ executable: 'npm', args: ['test'], exitCode: 0 });
-await session.fileChanged({ path: 'src/app.ts', operation: 'modified' });
-await session.testCompleted({ name: 'npm test', success: true, durationMs: 842 });
-await session.summary(`Reviewed ${contents.length} characters and completed the repair.`);
-await session.complete();
-```
-
-Use `userMessage()` and `agentMessage()` for visible conversation, `plan()` for
-a high-level plan, and `reasoningSummary()` only for a provider-visible summary.
-`runTool()` records a correlated `tool.called`/`tool.completed` pair and captures
-a JSON-compatible result or an error. Record file reads and changes when your
-application actually performs them. Do not submit hidden reasoning or private
-chain-of-thought.
-
-## Token Usage
-
-Pass one completed provider response to `reportProviderUsage()`. The SDK records provider-reported counters or a documented deterministic composition; it does not estimate opaque billing totals.
-
-```ts
-const response = await openai.responses.create({ model: 'gpt-5.6-terra', input: 'Fix the test.' });
-const report = await session.reportProviderUsage('openai', response);
-
-if (!report.normalized.ok) {
-  console.warn(`Token count was not reported: ${report.normalized.reason}`);
+try {
+  const issue = role => createTraceCredential({
+    url: supervisor.url, adminToken: supervisor.authToken,
+    role, projects: [projectId], ttlSeconds: 86_400,
+  });
+  const writer = await issue('writer');
+  const reader = await issue('reader');
+  const logger = await createLocalModelLogger({
+    projectId, serviceName: 'my-agent', endpoint: supervisor.url,
+    token: writer.token, privacy,
+    onDiagnostic: diagnostic => console.warn(diagnostic),
+  });
+  try {
+    await logger.trace({
+      name: 'lookup', kind: 'tool', input: { query: 'example' },
+      serializeResult: result => result,
+    }, () => ({ answer: 42 }));
+  } finally {
+    const status = await logger.shutdown();
+    if (!status.success) console.warn('Incomplete telemetry', status);
+  }
+  const url = new URL('/v2/traces', supervisor.url);
+  url.searchParams.set('projectId', projectId);
+  const response = await fetch(url, {
+    headers: { 'x-model-worklog-token': reader.token }, redirect: 'error',
+  });
+  if (!response.ok) throw new Error(`Trace query failed: ${response.status}`);
+  console.log(await response.json());
+} finally {
+  await supervisor.close();
 }
 ```
 
-Built-in normalizers support OpenAI Responses, OpenAI-compatible Chat Completions, Anthropic Messages, and Gemini GenerateContent. A different provider can use explicit response-field mappings. For streaming APIs, submit the final cumulative response once.
+For a long-running application, keep the operator running and pass its actual
+loopback URL and scoped writer through private application configuration. Only
+one supervisor may own a data directory. SDK shutdown must precede collector
+shutdown. Never port-forward the collector or give its credentials to browser code.
 
-If a provider response has no usage counters, Logger does not invent a token total or add a warning update to the log. The completed log simply shows that a token count was not reported.
+## Credentials And Endpoints
 
-## Provider And Agent Integration
+`createLocalModelLogger` prefers an explicit `token`; otherwise it reads the
+private, nonsymlink `trace-writer-token` under `MODEL_WORKLOG_HOME` (default
+`~/.model-worklog`). It reads neither `auth-token` nor `MODEL_WORKLOG_TOKEN` nor
+`MODEL_WORKLOG_TRACE_TOKEN`. The factory does not start the collector.
 
-Model Logger can be integrated with any agent runtime that can call the Node SDK
-from its backend or the local HTTP API. It cannot passively discover activity inside arbitrary
-processes: the runtime needs to call the SDK where it receives visible messages,
-plans, tool callbacks, file operations, command results, and provider responses.
+An operator can provision the file with `startSupervisor({ traceProjectId })` or
+VS Code **Configure SDK Logging**. The default lifetime is **24 hours**. Expired,
+revoked, or wrongly scoped files are not silently replaced at startup: explicitly
+renew/reprovision, then recreate/reconfigure clients. Wrong role/project is `403`,
+not an invitation to fall back to admin; expired/invalid tokens are `401`.
 
-| Agent or provider | Integration path | What is retained |
-| --- | --- | --- |
-| Codex App Server | Use VS Code **Log a Codex Task** or `POST /v1/codex-sessions`. | Direct documented events as `observed-native`, plus process lifecycle as `observed-boundary`. |
-| GitHub Copilot CLI task | Use VS Code **Log a Copilot CLI Task** or `POST /v1/copilot-sessions`. | Documented JSON message/tool events and OpenTelemetry usage spans as `observed-native`, plus process lifecycle as `observed-boundary`. |
-| GitHub Copilot CLI interactive | Use VS Code **Start Interactive Copilot CLI**. | Hook-supplied visible activity as `model-declared`, plus final documented metadata-only OpenTelemetry usage spans as `observed-native`. |
-| GitHub Copilot CLI personal hook | Enable Model Logger, then start a new normal Copilot CLI session in the trusted workspace. | Hook-supplied user prompts, tool activity/results, errors, and lifecycle as `model-declared`. Token counters are unavailable unless the tracked interactive or direct task launcher is used. |
-| Claude Code | Bridge documented hook payloads with `ClaudeCodeAdapter` and a `WorklogSession`. | Hook-reported lifecycle, instruction, tool, file, and visible summary events as `model-declared`. |
-| GitHub Copilot | Call the generic SDK from a Copilot-based agent, extension integration, or tool wrapper where documented visible events are available. | Integration-supplied events are `model-declared`. VS Code Copilot Chat messages and tools are not passively captured. |
-| OpenAI or OpenAI-compatible | Use the generic SDK around tool execution and pass the final response to `reportProviderUsage('openai', response)`. | Visible activity and provider token usage as `model-declared`. |
-| Gemini | Use the generic SDK around tool execution and pass the final response to `reportProviderUsage('gemini', response)`. | Visible activity and provider token usage as `model-declared`. |
-| Other agents and frameworks | Call the same SDK methods from the agent loop or framework callbacks. Use `TokenUsageMapping` for an unrecognized usage response. | Only events the integration actually reports, marked `model-declared`; unsupported visibility is `unknown`. |
+Endpoint precedence: `endpoint`, `MODEL_WORKLOG_TRACE_ENDPOINT`,
+`MODEL_WORKLOG_SUPERVISOR_URL`, then `http://127.0.0.1:43199/v2/traces/batch`.
+The factory accepts a loopback HTTP origin or the exact batch path, without URL
+credentials, query, or fragment; redirects are disabled.
 
-## Agent Visibility
+## Privacy And TypeScript
 
-Model Logger does not attempt passive capture of VS Code Copilot Chat, arbitrary model CLIs, filesystem changes, or terminal buffers. Those sources cannot prove which agent initiated an action and do not safely expose the model's visible tool stream.
+The bootstrap deliberately uses metadata-only capture. Content needs **both**
+SDK `privacy.mode: 'redacted-content'` and operator
+`tracePrivacy.mode: 'redacted-content'`. Changing the shared `privacy` value above
+configures both explicitly. Result/chunk content additionally needs
+`serializeResult`/`serializeChunk`. The collector cannot restore content already
+discarded by the SDK, spool, or upstream instrumentation.
 
-To capture real agent activity, use a documented adapter, hook, or SDK integration at the point where the agent emits visible messages, plans, tool calls, files, commands, results, and provider usage. Codex App Server and GitHub Copilot CLI are direct adapters. The Copilot relay launches `copilot --prompt` with its documented JSON event stream and metadata-only OpenTelemetry file export; it never enables prompt/response content capture in telemetry. Enable also installs one dedicated Copilot CLI user hook, which gives normal future `copilot` sessions structured prompt and tool lifecycle logs while Logger is enabled. Claude Code hooks and other SDK integrations are recorded as `model-declared`. VS Code Copilot Chat has no passive event capture path; it needs a documented GitHub event surface or an explicit SDK/tool-wrapper integration. Model Logger never retains raw private chain-of-thought; it keeps only a provider-visible reasoning summary where an adapter exposes one.
+Use `logger.trace` for operations, `logger.wrap` for functions, and `logger.stream`
+for single-pass async iterators. The [SDK reference](../packages/adapter-sdk/README.md)
+includes TypeScript, `ModelLoggerSpanExporter` for OTel JS/OpenInference/OpenLLMetry,
+and `instrumentMcpClient` for MCP. None installs universal agent instrumentation.
+Inspect `flush()`/`shutdown()` status: queues can drop snapshots and spooling is
+not exactly-once delivery. Missing token usage remains unknown, not zero.
 
-## Codex
+## Python Via OTLP
 
-The VS Code **Log a Codex Task** command launches `codex app-server` through the local supervisor for one task. The relay retains documented visible messages, plans, reasoning summaries, commands, command output, files, errors, instruction-source paths, usage updates, and terminal status. It supports user cancellation plus duration and reported-token limits.
+Use the [official HTTP/protobuf exporter](https://opentelemetry-python.readthedocs.io/en/latest/exporter/otlp/otlp.html),
+not gRPC. In your Python environment install `opentelemetry-sdk` and
+`opentelemetry-exporter-otlp-proto-http`. The operator must keep the collector
+running and privately supply its loopback origin and a scoped writer. Here
+`APP_TRACE_WRITER_TOKEN` is an application-defined variable, not SDK token discovery.
 
-Codex is the current direct-launch adapter. Other AI systems integrate through their documented hook, API, or framework callback surface and keep their appropriate `model-declared` or `unknown` evidence grade.
+```python
+import os
+from opentelemetry.exporter.otlp.proto.http import Compression
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+provider = TracerProvider(resource=Resource.create({"service.name": "python-agent"}))
+exporter = OTLPSpanExporter(
+    endpoint=os.environ["MODEL_WORKLOG_SUPERVISOR_URL"].rstrip("/") + "/v1/traces",
+    headers={
+        "x-model-worklog-token": os.environ["APP_TRACE_WRITER_TOKEN"],
+        "x-model-worklog-project": "my-project",
+    },
+    compression=Compression.NoCompression,
+    timeout=5,
+)
+provider.add_span_processor(BatchSpanProcessor(
+    exporter, max_queue_size=512, max_export_batch_size=100,
+))
+try:
+    with provider.get_tracer("my-agent").start_as_current_span("lookup") as span:
+        span.set_attribute("tool.name", "lookup")
+    if not provider.force_flush(timeout_millis=5000):
+        raise RuntimeError("Trace flush timed out")
+finally:
+    provider.shutdown()
+```
+
+`POST /v1/traces` accepts `application/x-protobuf` or `application/json`, up to
+**100 final spans and 2 MiB** per request. No compression or gRPC is supported.
+A count limit alone cannot enforce the byte limit: bound attributes/content and
+reduce batches further when necessary. Configure upstream capture and collector
+privacy separately; Python does not run the Model Logger JS redactor or spool.
+Monitor exporter errors; an OTel flush completing does not prove delivery.
+
+## VS Code And Compatibility
+
+Enable Model Logger, use **Select Trace Project** for the same `projectId`, then
+**Configure SDK Logging** with operator/admin access to provision the writer.
+**Traces** and **Trace Details** show captured spans, usage, and capture limits;
+readers can browse/export, while writer-only credentials cannot browse.
+**Export Captured Trace JSON** exports captured data, not hidden reasoning or a
+signed identity. Set `model-worklog.supervisorUrl` to the actual loopback origin.
+
+Existing session SDKs, CLI commands, and agent launchers remain optional
+compatibility paths, not prerequisites for tracing. VS Code documents agent
+hooks, but a new VS Code Chat hook adapter is not implemented here. Hook coverage
+depends on the selected harness, version, configuration, and policy. See the
+[capability matrix](adapter-capability-matrix.md), [evidence model](evidence-model.md),
+and [security model](security-model.md) before interpreting or sharing captures.
