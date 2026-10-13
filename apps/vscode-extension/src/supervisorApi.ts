@@ -44,7 +44,7 @@ interface ApiErrorBody {
 	readonly error?: { readonly message?: string };
 }
 
-async function localToken(): Promise<string> {
+export async function localToken(): Promise<string> {
 	const directory = process.env.MODEL_WORKLOG_HOME ?? join(homedir(), '.model-worklog');
 	const token = (await readFile(join(directory, 'auth-token'), 'utf8')).trim();
 	if (token === '') {

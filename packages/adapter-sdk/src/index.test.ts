@@ -130,3 +130,59 @@ test('follows committed events until a session becomes terminal', async () => {
 	assert.deepEqual(received, ['agent.summary', 'session.completed']);
 	assert.equal(eventRequests, 2);
 });
+
+test('tool execution continues when telemetry fails and reports the failure safely', async () => {
+	const client = new LocalSupervisorClient({
+		supervisorUrl: 'http://127.0.0.1:43199', token: 'local-token',
+		fetchImpl: async (url) => new URL(url).pathname === '/v1/sessions'
+			? new Response(JSON.stringify({ session: sessionBody() }), { status: 201 })
+			: new Response('{}', { status: 503 }),
+	});
+	const session = await client.startSession({ workspacePath: '/workspace', actor: 'agent' });
+	let failures = 0;
+	const result = await session.runTool({ tool: 'read' }, async () => 'contents', {
+		onTelemetryError: () => { failures += 1; throw new Error('diagnostic callback failed'); },
+	});
+	assert.equal(result, 'contents');
+	assert.equal(failures, 2);
+	let executed = false;
+	await assert.rejects(session.runTool({ tool: 'read' }, async () => { executed = true; }, { telemetryFailureMode: 'throw' }));
+	assert.equal(executed, false);
+});
+
+test('a completion logging failure cannot replace the original tool error', async () => {
+	const client = new LocalSupervisorClient({
+		supervisorUrl: 'http://127.0.0.1:43199', token: 'local-token',
+		fetchImpl: async (url, init) => {
+			if (new URL(url).pathname === '/v1/sessions') {
+				return new Response(JSON.stringify({ session: sessionBody() }), { status: 201 });
+			}
+			const body = JSON.parse(init?.body ?? '{}') as { kind: string };
+			return body.kind === 'tool.called'
+				? new Response(JSON.stringify({ event: { sequence: 2 } }), { status: 201 })
+				: new Response('{}', { status: 503 });
+		},
+	});
+	const session = await client.startSession({ workspacePath: '/workspace', actor: 'agent' });
+	const original = new Error('original failure');
+	await assert.rejects(session.runTool({ tool: 'read' }, async () => { throw original; }, { telemetryFailureMode: 'throw' }), (error) => error === original);
+});
+
+test('concurrent tool calls receive correlated IDs and serializer failures preserve results', async () => {
+	const correlations: string[] = [];
+	const client = new LocalSupervisorClient({
+		supervisorUrl: 'http://127.0.0.1:43199', token: 'local-token',
+		fetchImpl: async (url, init) => {
+			if (new URL(url).pathname === '/v1/sessions') {
+				return new Response(JSON.stringify({ session: sessionBody() }), { status: 201 });
+			}
+			correlations.push((JSON.parse(init?.body ?? '{}') as { correlationId: string }).correlationId);
+			return new Response(JSON.stringify({ event: { sequence: 2 } }), { status: 201 });
+		},
+	});
+	const session = await client.startSession({ workspacePath: '/workspace', actor: 'agent' });
+	await Promise.all([session.runTool({ tool: 'read' }, async () => 1), session.runTool({ tool: 'read' }, async () => 2)]);
+	assert.equal(new Set(correlations).size, 2);
+	assert.ok(correlations.every((id) => correlations.filter((candidate) => candidate === id).length === 2));
+	assert.equal(await session.runTool({ tool: 'read' }, async () => 'result', { serializeResult: () => { throw new Error('serialization failed'); } }), 'result');
+});

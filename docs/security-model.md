@@ -1,73 +1,98 @@
-# Model Logger Security Model
+# Security Model
 
-Model Logger is a local-only logger, not a hosted logging service. It is
-designed to reduce accidental exposure and network attack surface while
-retaining evidence on the host where the workspace runs.
+Model Logger collects explicitly instrumented activity on the same host. It is
+not a hosted service, a sandbox, or an independent observer of application truth.
+Use Node.js >=22.13 for the repository and collector.
 
-## Protections
+## Network Boundary
 
-- The supervisor, extension, and SDK accept only `127.0.0.1`, `localhost`, or
-  `::1` over HTTP and normalize `localhost` to `127.0.0.1` where they launch a
-  supervisor.
-- Every non-health API call requires a per-installation, 256-bit local token.
-  Token comparison is timing-safe.
-- The store directory and token are hardened to owner-only POSIX permissions
-  (`0700` and `0600`) and the token cannot be a symlink or other special
-  file.
-- An explicit trusted-workspace action is required before the supervisor runs
-  a command or starts a Codex session.
-- Commands are argument arrays, not shell strings. Git inspection disables
-  repository hooks and external diff/text-conversion drivers.
-- The supervisor owns every managed child process. A stop request records the
-  cancellation, sends `SIGTERM`, and uses `SIGKILL` only after a bounded grace
-  period when the process remains alive.
-- A supervisor launched by the VS Code extension accepts authenticated,
-  expiring client leases. It stops only after the last extension client releases
-  its lease and no retained session is running; a CLI-managed supervisor never
-  enables this shutdown mode.
-- While Logger is enabled, the extension may install one Model Logger-owned
-  Copilot CLI hook in the user's Copilot hooks directory. The hook invokes a
-  bundled local bridge that posts only to the authenticated loopback supervisor,
-  emits a neutral hook response, and is removed after the final extension lease
-  is released. It never carries the supervisor token in the hook configuration.
-- Evidence is redacted before storage, responses, search, or export. API
-  responses are marked `no-store` and carry restrictive browser-oriented
-  response headers.
-- CLI evidence exports use owner-only POSIX permissions, even when replacing an
-  existing file.
-- The supervisor has bounded request bodies and conservative HTTP timeouts.
+- `startSupervisor` binds only to `127.0.0.1` or `::1`. SDK HTTP clients also
+  accept `localhost`; URLs must not contain credentials, queries, or fragments.
+- Keep applications, collector, and reader on the same host. Do not port-forward
+  the collector, expose it through a proxy, or bind it to a network interface.
+- Trace requests require `x-model-worklog-token`. `/health` is unauthenticated
+  and is not a credential or readiness check for a particular project.
+- Trace routes validate the loopback Host and browser Origin/Fetch Metadata.
+  Responses use `no-store` and restrictive browser headers. Do not give a browser
+  the collector token; use a trusted backend for any application-facing UI.
+- The SDK disables redirects. Local HTTP is intentional, not permission to send
+  credentials to a remote collector.
 
-Because the service never listens on a network interface, ordinary network
-man-in-the-middle attacks cannot reach it. The local HTTP transport is
-intentional: TLS would not improve a connection that is restricted to the
-same machine and protected by a local token.
+## Credentials
 
-## Operator Requirements
+| Role | Allowed operations |
+| --- | --- |
+| Writer | Submit SDK batches or OTLP spans for explicitly authorized projects. |
+| Reader | List and read traces for explicitly authorized projects. |
+| Admin | Issue/revoke credentials, delete traces, run retention, and read/write. |
 
-- Keep `MODEL_WORKLOG_HOME` on a local, user-owned disk. Do not place it in a
-  shared directory or commit it to source control.
-- Do not expose or port-forward the supervisor port. Do not change the VS Code
-  `model-worklog.supervisorUrl` setting to anything other than loopback.
-- Treat exported JSON evidence as potentially sensitive. Review it before
-  sharing, even though automatic redaction runs.
-- Install packages and VSIX files only from the authorized registry,
-  Marketplace publisher, or GitHub Release. Verify the publisher and version.
-- Keep Node.js, VS Code, Codex, and Model Logger updated. Report suspected
-  vulnerabilities through [SECURITY.md](../SECURITY.md), not public issues.
+Keep the installation `auth-token` and `RunningSupervisor.authToken` in the
+operator process only. Use `createTraceCredential` to issue separate writer and
+reader credentials; neither scoped role can mint credentials or use `*` scope.
+Stored scoped credentials contain token digests, not the issued plaintext token.
+Missing, expired, or revoked tokens return `401`; wrong role/project returns
+`403`. A forbidden scope is not a reason to retry with the admin credential.
 
-## Important Limits
+Scoped credentials default to **24 hours**. `startSupervisor({ traceProjectId })`
+can provision a private `trace-writer-token` file for that one project. Startup
+reuses a valid matching file but refuses an expired, revoked, or differently
+scoped file. There is no automatic renewal: the operator must issue a replacement
+or explicitly remove/reprovision that file, then reconfigure/recreate clients.
+Replacing the file does not change a token already loaded into an SDK instance.
 
-No application can protect evidence from malware, a debugger, or another
-process already running as the same operating-system user. Such a process can
-read files that you can read and can observe local process activity.
+`createLocalModelLogger` uses an explicit `token` or the writer file under
+`MODEL_WORKLOG_HOME` (default `~/.model-worklog`). It does not read `auth-token`,
+`MODEL_WORKLOG_TOKEN`, or `MODEL_WORKLOG_TRACE_TOKEN`. Never log tokens, commit
+them, place them in command arguments, or paste them into chats.
 
-Redaction is defense in depth, not a promise that every secret format will be
-recognized. Never intentionally send credentials, private reasoning, customer
-data, or confidential source to a log.
+## Privacy Gates
 
-The evidence-bundle SHA-256 manifest detects accidental or unsophisticated
-modification. It is not a signature and does not prove authorship or defend
-against a local attacker that can rewrite the bundle and its manifest.
+Metadata-only capture is the default. For SDK content, **both** the application
+logger's `privacy.mode` and the operator's `startSupervisor({ tracePrivacy })`
+must use `redacted-content`. Result/chunk capture also requires an explicit
+serializer. The collector applies its own policy to every intake path, including
+OTLP; an application cannot opt the collector into content capture.
 
-External SDK integrations are retained as `model-declared` evidence. They
-should not be treated as independently observed facts.
+The SDK redacts before queueing or spooling; the collector redacts again before
+storage and returns stored, redacted spans. The disk spool is not a raw-payload
+archive. Configure its privacy policy consistently with the logger; a stricter
+policy can discard content earlier. No provider-hidden reasoning is collected.
+
+Known secret patterns and forbidden reasoning fields are removed or redacted;
+attributes, strings, events, and payloads are bounded. Metadata names and
+explicitly allowed attribute keys can still disclose sensitive information.
+Redaction cannot identify all sensitive prose: keep capture off where needed,
+use `excludedKeys`, and review exports before sharing.
+
+Collector intake is bounded to 100 spans/snapshots and 2 MiB per request.
+OTLP accepts HTTP JSON or protobuf, not compression or gRPC. Bounded SDK queues
+can drop telemetry; neither a successful application call nor a local spool
+guarantees complete or exactly-once evidence.
+
+## Storage And Threat Limits
+
+Keep the data directory and spool on private, local, user-owned storage, outside
+source control. Collector storage uses owner-only POSIX directories/files
+(`0700`/`0600`), checks ownership and file identities, and rejects unsafe links.
+The SDK writer-token reader requires a private regular file and rejects symlinks.
+Spools need a dedicated single-writer directory. Private permissions are not
+encryption; backups, exported files, and the rest of the host need protection too.
+
+Windows ACL enforcement and equivalent cross-platform filesystem guarantees are
+**not qualified** by these POSIX checks. Do not infer platform readiness from
+TypeScript compilation or a successful run on another OS. Host administrators,
+debuggers, and malicious processes running as the same OS user are outside the
+threat model; local authentication does not isolate them.
+
+SDK and OTLP spans are `model-declared`. Legacy direct relays can retain
+`observed-native` events, but that grade does not authenticate the actor's
+identity. A legacy session bundle's SHA-256 audit manifest is a consistency check,
+not a signature, proof of authorship, or protection against rewriting the bundle.
+Trace JSON exports are not signed audit bundles either.
+
+Legacy agent launchers remain optional and require explicit workspace trust.
+Hook coverage depends on the harness, version, configuration, and policy; it is
+not universal agent or editor surveillance. No compliance certification or
+performance benchmark is implied. Report vulnerabilities via
+[SECURITY.md](../SECURITY.md). See [integration](integration.md) for setup and
+[evidence](evidence-model.md) for interpretation limits.

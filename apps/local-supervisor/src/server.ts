@@ -1,7 +1,7 @@
 import { createServer, type RequestListener, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import type { HealthResponse } from 'model-worklog-schema';
+import type { HealthResponse, PrivacyOptions } from 'model-worklog-schema';
 
 import { buildHealthResponse, createIdentity } from './health';
 import { route } from './router';
@@ -10,6 +10,10 @@ import type { CodexRelayFactory } from './codexRelay';
 import type { CopilotRelayFactory } from './copilotRelay';
 import { defaultDataDirectory } from './state';
 import { SUPERVISOR_VERSION } from './version';
+import type { TraceStorageOptions } from './traces/domain/contracts';
+import type { TraceRequestHandler } from './traces/http';
+import { prepareTraceDirectory } from './traces/infrastructure/files';
+import { openTraceRuntime, type TraceRuntime } from './traces/runtime';
 
 /** Hosts the supervisor may bind to. Never a routable remote address. */
 export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', '::1']);
@@ -29,6 +33,9 @@ export interface StartOptions {
 	readonly copilotRelayFactory?: CopilotRelayFactory;
 	/** Stops this supervisor after its final VS Code extension lease is released. */
 	readonly shutdownWhenNoExtensionClients?: boolean;
+	readonly tracePrivacy?: PrivacyOptions;
+	readonly traceStorage?: TraceStorageOptions;
+	readonly traceProjectId?: string;
 }
 
 export interface RunningSupervisor {
@@ -75,7 +82,7 @@ async function readJsonBody(req: import('node:http').IncomingMessage, maximumByt
 	return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-export function createRequestListener(health: HealthResponse, service?: SupervisorService): RequestListener {
+export function createRequestListener(health: HealthResponse, service?: SupervisorService, traceHandler?: TraceRequestHandler): RequestListener {
 	return (req, res) => {
 		void (async () => {
 
@@ -88,6 +95,11 @@ export function createRequestListener(health: HealthResponse, service?: Supervis
 				query = url.searchParams;
 			} catch {
 				pathname = '/';
+			}
+
+			if (traceHandler?.supports(pathname)) {
+				await traceHandler(req, res);
+				return;
 			}
 
 			if (pathname === '/health' || service === undefined) {
@@ -106,7 +118,10 @@ export function createRequestListener(health: HealthResponse, service?: Supervis
 				const message = error instanceof Error ? error.message : String(error);
 				respond(res, 400, { error: { code: 'invalid_request', message } }, method === 'HEAD');
 			}
-		})();
+		})().catch(() => {
+			if (!res.headersSent && !res.destroyed) { respond(res, 500, { error: { code: 'internal_error', message: 'Supervisor request failed.' } }, false); }
+			else { res.destroy(); }
+		});
 	};
 }
 
@@ -123,10 +138,12 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 
 	const identity = createIdentity(options.version ?? SUPERVISOR_VERSION, options.now?.() ?? new Date());
 	const health = buildHealthResponse(identity);
+	const dataDirectory = options.dataDirectory ?? defaultDataDirectory();
+	prepareTraceDirectory(dataDirectory);
 	let close: (() => Promise<void>) | undefined;
 	let shutdownRequested = false;
 	const service = await SupervisorService.open({
-		dataDirectory: options.dataDirectory ?? defaultDataDirectory(),
+		dataDirectory,
 		authToken: options.authToken,
 		instanceId: identity.instanceId,
 		now: options.now,
@@ -139,16 +156,19 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 			}
 			shutdownRequested = true;
 			setTimeout(() => {
-				void close?.();
+				void close?.().catch(() => { process.stderr.write('Supervisor shutdown failed.\n'); });
 			}, 0);
 		},
 	});
-	const server: Server = createServer({ maxHeaderSize: 8 * 1024 }, createRequestListener(health, service));
-	server.headersTimeout = 10_000;
-	server.requestTimeout = 15_000;
-	server.keepAliveTimeout = 5_000;
+	let server: Server;
+	let traces: TraceRuntime | undefined;
 
 	try {
+		traces = openTraceRuntime({ dataDirectory, adminToken: service.token, now: options.now, privacy: options.tracePrivacy, storage: options.traceStorage, projectId: options.traceProjectId });
+		server = createServer({ maxHeaderSize: 8 * 1024 }, createRequestListener(health, service, traces.handler));
+		server.headersTimeout = 10_000;
+		server.requestTimeout = 15_000;
+		server.keepAliveTimeout = 5_000;
 		await new Promise<void>((resolve, reject) => {
 			const onError = (error: Error): void => {
 				server.removeListener('error', onError);
@@ -161,7 +181,7 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 			});
 		});
 	} catch (error) {
-		await service.close();
+		try { traces?.close(); } finally { await service.close(); }
 		throw error;
 	}
 
@@ -184,7 +204,7 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 					});
 				});
 			} finally {
-				await service.close();
+				try { traces?.close(); } finally { await service.close(); }
 			}
 		})();
 		return closePromise;

@@ -1,33 +1,50 @@
 # Model Logger for VS Code
 
-Model Logger is a local AI session logger. Install `model-worklog-<version>.vsix` using VS Code's **Extensions: Install from VSIX...** command, or run:
+Inspect instrumented application traces in **Model Logger > Traces**. The bundled supervisor stores retained spans locally in SQLite. Existing CLI session logs remain in **Logs**.
 
-```sh
-code --install-extension model-worklog-<version>.vsix
+## SDK Quickstart
+
+1. Open a trusted workspace and run **Model Logger: Enable Model Logger**.
+2. In **Traces**, run **Configure SDK Logging** as an admin and choose a project ID. Change the view's project with **Select Trace Project** or `model-worklog.trace.projectId` (default: `default`).
+3. Install `model-worklog-sdk` in your application and instrument its operations:
+
+```ts
+import { createLocalModelLogger } from 'model-worklog-sdk';
+
+const logger = await createLocalModelLogger({
+	projectId: 'default',
+	serviceName: 'my-app',
+});
+
+try {
+	await logger.trace({ name: 'example', kind: 'workflow' }, async () => {
+		await logger.trace({ name: 'work', kind: 'custom' }, async () => {});
+	});
+} finally {
+	await logger.shutdown();
+}
 ```
 
-Open a trusted workspace and run **Model Logger: Enable Model Logger**. The extension starts or reconnects to the bundled local supervisor after that explicit action and shows activity in the Model Logger Activity Bar view.
+Use your chosen project ID. **Model Logger SDK** output provides a matching, secret-free example. Setup writes a 24-hour, single-project writer credential to `trace-writer-token` in `MODEL_WORKLOG_HOME` (default `~/.model-worklog`), with mode `0600`. The SDK reads it directly. Tokens never go to the clipboard, settings, examples, or webviews. Replacement requires confirmation; valid other-project credentials, symlinks, hardlinks, public files, and changed targets are refused. Failed writes trigger revocation; failed revocation offers a retry. Restart SDK applications after replacement.
 
-Use **Log a Codex Task** to launch the installed, authenticated Codex CLI through the supervisor's App Server relay. Use **Log a Copilot CLI Task** to launch one prompted GitHub Copilot CLI task through its documented JSON event stream and OpenTelemetry usage export. Use **Start Interactive Copilot CLI** to open the normal interactive Copilot terminal experience with metadata-only telemetry enabled; final provider-reported token usage is saved when the session ends. Enable Model Logger also installs a dedicated personal Copilot CLI hook: restart Copilot CLI, then ordinary future Copilot CLI sessions in the trusted workspace log user prompts, tool activity/results, errors, and session lifecycle automatically. Copilot does not expose token counters to the automatic hook; use **Start Interactive Copilot CLI** or **Log a Copilot CLI Task** when a log needs provider-reported usage. Each log is named after its task. Logs are grouped as **Live Activity** and **Previous Activity** in the Model Logger sidebar. The newest log opens automatically when no log is selected, and selecting any log opens it directly in the Model Logger panel at the bottom of VS Code. It updates in place without taking editor focus and shows only sections with content, such as User Request, Agent Plan, Tools Used, Agent Response, and Tokens Used. Long entry bodies initially show a two-line preview; use **Show more** to expand a specific entry, which remains open through refreshes until you choose **Show less**. The complete redacted evidence remains available in **Download JSON**. **Tokens Used** is always the final section and says when no token usage was supplied. Directory inspections and file reads are labeled separately when the adapter can verify the target kind. Live logs offer **Stop Log**: it interrupts Logger-managed tasks, or stops recording an interactive Copilot CLI turn without closing the CLI. Finished logs provide **Delete Log**, which asks for confirmation before permanent removal.
+The application and supervisor must share the same environment and private home. For a non-default `model-worklog.supervisorUrl`, set the application's `MODEL_WORKLOG_SUPERVISOR_URL` to the same loopback origin. Remote workspaces run the supervisor remotely.
 
-The extension runs where the workspace extension host runs. In Remote-SSH,
-containers, and Codespaces, the supervisor and relay run in the remote
-workspace environment, not on the local desktop.
+## Inspect And Export
 
-## Commands
+Select a trace for nested spans, revisions, timing, attributes, events, links, evidence grade, and capture reports. Missing parents and cycles remain visible. Absent token totals and usage categories are **not reported**, never invented zeros or sums.
 
-- **Enable Model Logger** — starts or reconnects the loopback-only local supervisor, trusts the current workspace, and installs Model Logger's dedicated Copilot CLI personal hook.
-- **Disable Model Logger** — disconnects this VS Code window and hides activity without stopping active agent work.
-- **Log a Codex Task** — runs the installed, authenticated Codex CLI through the bundled relay.
-- **Log a Copilot CLI Task** — runs the installed, authenticated Copilot CLI through its documented event and usage streams.
-- **Start Interactive Copilot CLI** — opens normal interactive Copilot CLI with final metadata-only token logging.
-- **Stop Live Log** — interrupts a Logger-managed task or stops recording an interactive Copilot CLI turn.
-- **View Log** and **Download JSON** — available inside every log.
-- **Delete Log** — available for finished logs and permanently removes local activity after confirmation.
-- **Refresh Logs** — refreshes live and recent log groups.
+Refresh manually or keep either trace view visible for five-second polling. Requests are serialized and cancelled on project change, disable, or disposal. Load more traces or spans as needed; refresh retains loaded pages up to the ten-page view limit.
 
-The `model-worklog.supervisorUrl` setting must be a loopback HTTP address. Its default is `http://127.0.0.1:43199`. Model Logger never uploads workspace activity by default.
+Readers and admins can export JSON. Export validates every returned page, rejects repeated cursors, and stops at 100 pages, 10,000 spans, 16 MiB of collected data, or 60 seconds. Failure does not save a partial export. Exports include capture-scope, missing-parent, and gap warnings, not connection credentials. Pagination is not a point-in-time snapshot. Admin-only deletion confirms both project and trace IDs; the backend reauthorizes every request.
 
-The personal hook is active only while at least one VS Code window has Model Logger enabled. It is removed after the final enabled window disables Logger. It does not capture VS Code Copilot Chat, which does not expose a compatible passive event stream.
+## Privacy And Coverage
 
-For standalone scripts or application integration, install `model-worklog-sdk`; see the repository's [integration guide](https://github.com/ManoharEldhandi/model-worklog/blob/main/docs/integration.md). Use is governed by the repository [license](../../LICENSE).
+Supported agent hooks and instrumented applications only; coverage depends on integration. Enabling does not observe arbitrary chat or instrument applications automatically. Trace evidence is `model-declared`, not independent proof of execution. Provider-hidden reasoning is not collected. Redaction, truncation, drops, running spans, and uninstrumented work can leave gaps. Review exports before sharing.
+
+The supervisor defaults to metadata-only capture. There is **no content opt-in toggle**: the current supervisor entry point does not map trace privacy environment settings. Content capture requires trusted startup wiring of `tracePrivacy` into `startSupervisor` plus SDK opt-in. An invented environment flag will not enable it. Capture reports show the policy actually applied.
+
+## Optional CLI Logs
+
+**Log a Codex Task**, **Log a Copilot CLI Task**, and **Start Interactive Copilot CLI** retain their existing launchers and session UI, including live updates, stop recording, JSON download, and confirmed deletion. Enable retains the existing Copilot CLI personal-hook setup; restart Copilot CLI for future hooked sessions. This is separate from SDK tracing and does not implement additional VS Code chat hooks.
+
+**Disable Model Logger** disconnects this window without stopping active agent work; the legacy personal hook is removed after the last enabled window disconnects. Trace failures are reported separately without discarding saved session data. The trace UI defaults to the existing local operator `auth-token`, with roles fetched from `/v2/identity`; the trace client also supports injected reader credentials. Scoped trace tokens cannot access legacy session endpoints.

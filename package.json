@@ -1,6 +1,6 @@
 {
   "name": "model-worklog-workspace",
-  "version": "0.1.15",
+  "version": "0.2.0",
   "private": true,
   "description": "Local AI session logging and review",
   "license": "MIT",
@@ -9,7 +9,7 @@
     "url": "git+https://github.com/ManoharEldhandi/model-worklog.git"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "workspaces": [
     "packages/*",
@@ -26,11 +26,12 @@
     "cli": "node apps/cli/dist/bin.js",
     "demo:model": "node examples/dummy-model-run.mjs",
     "demo:live": "node examples/live-agent-demo.mjs",
+    "demo:trace": "node examples/sdk-tracing-demo.mjs",
     "extension:install": "npm --prefix apps/vscode-extension ci",
     "extension:package": "npm --prefix apps/vscode-extension run vsix",
     "extension:test": "npm --prefix apps/vscode-extension test",
     "release:versions": "node scripts/check-release-versions.mjs",
-    "release:check": "npm run release:versions && npm run test && npm run extension:install && npm run extension:test && npm run pack:check && npm run extension:package",
+    "release:check": "npm run release:versions && npm run test && npm run demo:trace && npm run extension:install && npm run extension:test && npm run pack:check && npm run extension:package",
     "package:extension": "npm --prefix apps/vscode-extension run vsix",
     "pack:check": "npm run build && npm pack --dry-run --workspace model-worklog-schema && npm pack --dry-run --workspace model-worklog-supervisor && npm pack --dry-run --workspace model-worklog && npm pack --dry-run --workspace model-worklog-sdk"
   },

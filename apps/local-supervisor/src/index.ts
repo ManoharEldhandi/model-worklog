@@ -13,3 +13,6 @@ export {
 export { acquireExclusiveStoreLock, defaultDataDirectory, type StoreLock, type TrustedWorkspace } from './state';
 export { DEFAULT_SUPERVISOR_PORT, SUPERVISOR_VERSION } from './version';
 export { launchDetachedSupervisor, supervisorEntrypointPath, type DetachedSupervisorOptions } from './launcher';
+export { createTraceCredential, type CreateTraceCredentialOptions } from './traces/bootstrap';
+export type { TraceCredential, TraceStorageOptions } from './traces/domain/contracts';
+export type { TraceRequestHandler } from './traces/http';

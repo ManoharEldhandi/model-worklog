@@ -511,7 +511,7 @@ test('records final documented telemetry for a tracked interactive Copilot CLI s
 	assert.equal(completed.session.state, 'completed');
 	assert.equal(completed.session.tokenUsage.totalTokens, 150);
 	const events = (await (await api(supervisor, `/v1/sessions/${startedSession.sessionId}/events`)).json() as { events: { kind: string; evidenceGrade: string }[] }).events;
-	assert.equal(events.find((event) => event.kind === 'usage.reported')?.evidenceGrade, 'observed-native');
+	assert.equal(events.find((event) => event.kind === 'usage.reported')?.evidenceGrade, 'model-declared');
 });
 
 test('marks unfinished sessions interrupted when a new supervisor recovers the evidence store', async () => {

@@ -119,7 +119,7 @@ export class ClaudeCodeAdapter {
 		const correlationId = eventCorrelation(event);
 		const toolName = optionalString(event.tool_name);
 		const toolInput = objectValue(event.tool_input);
-		const toolResponse = event.tool_response ?? event.tool_result;
+		const toolResponse = event.tool_response === undefined ? event.tool_result : event.tool_response;
 		const sourceSessionId = optionalString(event.session_id);
 		let emitted = 0;
 		const record = async (kind: EventKind, payload: JsonObject, correlation = correlationId): Promise<void> => {
@@ -184,7 +184,7 @@ export class ClaudeCodeAdapter {
 				await record('tool.completed', {
 					tool: toolName,
 					success: hookEvent === 'PostToolUse',
-					...(hookEvent === 'PostToolUse' ? { result: objectValue(toolResponse) } : { error: optionalString(event.error) ?? 'Tool failed.' }),
+					...(hookEvent === 'PostToolUse' ? (isJsonValue(toolResponse) ? { result: toolResponse } : {}) : { error: optionalString(event.error) ?? 'Tool failed.' }),
 				});
 				if (['Write', 'Edit', 'Delete'].includes(toolName)) {
 					const path = displayPath(toolInput.file_path, this.options.workspacePath);
@@ -428,7 +428,12 @@ export class CodexAppServerAdapter {
 				const argumentsValue = objectValue(item.arguments);
 				await record(method === 'item/started' ? 'tool.called' : 'tool.completed', {
 					tool,
-					...(method === 'item/started' ? { arguments: argumentsValue } : { success: item.status === 'completed' || item.success === true }),
+					...(optionalString(item.server) === undefined ? {} : { server: optionalString(item.server) as string }),
+					...(method === 'item/started' ? { arguments: argumentsValue } : {
+						success: item.status === 'completed' || item.success === true,
+						...(isJsonValue(item.result) ? { result: item.result } : {}),
+						...(isJsonValue(item.error) ? { error: item.error } : {}),
+					}),
 				}, itemCorrelation);
 				const path = method === 'item/started' && isReadTool(tool) ? readPath(argumentsValue, this.options.workspacePath) : undefined;
 				if (path !== undefined) {

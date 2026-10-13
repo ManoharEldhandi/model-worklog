@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,18 @@ import { normalizeProviderUsage, type TokenUsageMapping, type UsageNormalization
 
 export * from './usage';
 export * from './vendorAdapters';
+export * from './tracing/exporter';
+export * from './tracing/http';
+export { ModelLogger, createModelLogger } from './tracing/logger';
+export { createLocalModelLogger, type LocalModelLoggerOptions } from './tracing/local';
+export { formatTraceparent, parseTraceparent, type TraceContext } from './tracing/context';
+export type { ModelLoggerOptions, SpanOptions, TraceOptions, TraceSpanHandle, TraceStreamOptions, TraceStreamSource } from './tracing/types';
+export type { TraceDiagnostic, TraceDiagnosticHandler, TraceFlushResult } from './tracing/diagnostics';
+export type { TraceLimits } from './tracing/privacy';
+export type { TraceSpool, TraceSpoolEntry } from './tracing/spool';
+export { DiskTraceSpool, type DiskTraceSpoolOptions } from './tracing/diskSpool';
+export { ModelLoggerSpanExporter } from './tracing/otel';
+export { instrumentMcpClient, type McpClient, type McpInstrumentationOptions } from './tracing/integrations/mcp';
 export { formatSessionEventText, presentSessionEvent } from 'model-worklog-schema';
 
 export const DEFAULT_SUPERVISOR_URL = 'http://127.0.0.1:43199' as const;
@@ -61,6 +74,8 @@ export interface ToolResult {
 
 export interface ToolExecutionOptions<Result> {
 	readonly serializeResult?: (result: Result) => JsonValue | undefined;
+	readonly telemetryFailureMode?: 'continue' | 'throw';
+	readonly onTelemetryError?: (error: unknown) => void;
 }
 
 export interface CommandActivity {
@@ -314,23 +329,38 @@ export class WorklogSession {
 	}
 
 	async runTool<Result>(activity: ToolCall, operation: () => Promise<Result>, options: ToolExecutionOptions<Result> = {}): Promise<Result> {
-		await this.toolCalled(activity);
+		const correlationId = activity.correlationId ?? `tool_${randomUUID()}`;
+		const capture = async (record: () => Promise<unknown>): Promise<void> => {
+			try {
+				await record();
+			} catch (error) {
+				try {
+					options.onTelemetryError?.(error);
+				} catch {}
+				if (options.telemetryFailureMode === 'throw') {
+					throw error;
+				}
+			}
+		};
+		await capture(() => this.toolCalled({ ...activity, correlationId }));
 		let result: Result;
 		try {
 			result = await operation();
 		} catch (error) {
-			await this.toolCompleted({
+			await capture(() => this.toolCompleted({
 				tool: activity.tool,
 				success: false,
 				error: error instanceof Error ? error.message : String(error),
-				correlationId: activity.correlationId,
-			});
+				correlationId,
+			})).catch(() => undefined);
 			throw error;
 		}
-		const serialized = options.serializeResult === undefined
-			? isJsonValue(result) ? result : undefined
-			: options.serializeResult(result);
-		await this.toolCompleted({ tool: activity.tool, success: true, ...(serialized === undefined ? {} : { result: serialized }), correlationId: activity.correlationId });
+		await capture(() => {
+			const serialized = options.serializeResult === undefined
+				? isJsonValue(result) ? result : undefined
+				: options.serializeResult(result);
+			return this.toolCompleted({ tool: activity.tool, success: true, ...(serialized === undefined ? {} : { result: serialized }), correlationId });
+		});
 		return result;
 	}
 
