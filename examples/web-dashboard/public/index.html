@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Model Worklog Web Demo</title>
+	<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+	<main class="shell">
+		<header class="topbar">
+			<div>
+				<p class="eyebrow">Local SDK demonstration</p>
+				<h1>Model Worklog</h1>
+			</div>
+			<div class="connection" id="connection-status" aria-live="polite">Starting local collector</div>
+		</header>
+
+		<section class="workspace" aria-label="Chat and trace dashboard">
+			<section class="conversation" aria-labelledby="chat-title">
+				<div class="section-heading">
+					<div>
+						<p class="eyebrow">Workspace prompt</p>
+						<h2 id="chat-title">Copilot review</h2>
+					</div>
+					<span class="mode" id="provider-mode">Checking provider</span>
+				</div>
+				<p class="workspace-context" id="workspace-context">Preparing the isolated sample workspace</p>
+				<div class="messages" id="messages" aria-live="polite">
+					<div class="message assistant">
+						<p class="message-label">Assistant</p>
+						<p>Ask for a summary or review. Observable Copilot activity prints in the log.</p>
+					</div>
+				</div>
+				<form class="composer" id="chat-form">
+					<label class="sr-only" for="message">Message</label>
+					<textarea id="message" name="message" maxlength="2000" placeholder="Ask about the trace, a project task, or anything else" required></textarea>
+					<button id="send-button" type="submit">Send</button>
+				</form>
+			</section>
+
+			<aside class="observability" aria-label="Execution trace">
+				<section class="log-panel" aria-labelledby="log-title">
+					<div class="section-heading compact">
+						<div>
+							<p class="eyebrow">Live execution</p>
+							<h2 id="log-title">Terminal log</h2>
+						</div>
+						<span class="run-state" id="run-state">Idle</span>
+					</div>
+					<p class="terminal-key"><span>TIME</span><span>EVENT</span><span>DETAIL</span></p>
+					<ol class="timeline" id="timeline">
+						<li class="empty-state">Waiting for a prompt...</li>
+					</ol>
+				</section>
+
+				<section class="trace-panel" aria-labelledby="trace-title">
+					<div class="section-heading compact">
+						<div>
+							<p class="eyebrow">Stored trace</p>
+							<h2 id="trace-title">SDK spans</h2>
+						</div>
+						<div class="trace-actions">
+							<span class="trace-count" id="trace-count">0 spans</span>
+							<a class="download-button" id="download-link" aria-disabled="true" tabindex="-1">Download JSON</a>
+						</div>
+					</div>
+					<div class="span-list" id="span-list">
+						<p class="empty-state">A completed run will appear here.</p>
+					</div>
+				</section>
+			</aside>
+		</section>
+	</main>
+	<script src="/app.js"></script>
+</body>
+</html>

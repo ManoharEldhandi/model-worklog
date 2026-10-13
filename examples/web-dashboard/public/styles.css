@@ -1,0 +1,160 @@
+:root {
+	color-scheme: light;
+	font-family: ui-monospace, Menlo, Monaco, monospace;
+	background: #e9eceb;
+	color: #202a29;
+}
+
+* { box-sizing: border-box; }
+
+body {
+	height: 100dvh;
+	margin: 0;
+	min-width: 320px;
+	overflow: hidden;
+	background: #e9eceb;
+}
+
+button, textarea { font: inherit; }
+
+button {
+	border: 0;
+	border-radius: 2px;
+	background: #255a52;
+	color: #ffffff;
+	cursor: pointer;
+	font-weight: 700;
+	padding: 0 1.2rem;
+}
+
+button:hover { background: #1a403b; }
+button:disabled { cursor: wait; opacity: 0.65; }
+
+.shell {
+	display: flex;
+	flex-direction: column;
+	height: min(780px, calc(100dvh - 2rem));
+	width: min(1440px, calc(100% - 2rem));
+	margin: 1rem auto;
+	border: 1px solid #a4afac;
+	background: #f7f8f7;
+}
+
+.topbar, .section-heading {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 1rem;
+}
+
+.topbar {
+	padding: 0.9rem 1rem;
+	border-bottom: 1px solid #a4afac;
+	background: #f7f8f7;
+	color: #202a29;
+}
+
+h1, h2, p { margin: 0; }
+h1 { font-size: 1.3rem; font-weight: 700; letter-spacing: 0; }
+h2 { font-size: 0.95rem; letter-spacing: 0; }
+
+.eyebrow {
+	margin-bottom: 0.25rem;
+	color: #55706a;
+	font-size: 0.7rem;
+	font-weight: 700;
+	letter-spacing: 0;
+	text-transform: uppercase;
+}
+
+.connection, .mode, .run-state, .trace-count {
+	font-size: 0.72rem;
+	line-height: 1.4;
+}
+
+.connection { max-width: 25rem; color: #415953; text-align: right; }
+.mode, .trace-count { color: #406661; }
+.run-state { color: #a33b1f; text-transform: capitalize; }
+.run-state[data-state='completed'] { color: #187258; }
+.run-state[data-state='failed'], .run-state[data-state='error'] { color: #b22b25; }
+.trace-actions { display: flex; align-items: center; gap: 0.65rem; }
+.download-button { display: inline-flex; min-height: 2rem; align-items: center; border-radius: 2px; background: #255a52; color: #ffffff; font-size: 0.68rem; font-weight: 700; padding: 0.35rem 0.6rem; text-decoration: none; }
+.download-button:hover { background: #1a403b; }
+.download-button[aria-disabled='true'] { cursor: not-allowed; opacity: 0.65; pointer-events: none; }
+
+.workspace {
+	display: grid;
+	flex: 1;
+	grid-template-columns: minmax(300px, 0.45fr) minmax(0, 1.55fr);
+	min-height: 0;
+}
+
+.conversation { display: flex; min-height: 0; flex-direction: column; padding: 1rem; }
+.observability { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; border-left: 1px solid #a4afac; background: #f7f8f7; }
+.log-panel, .trace-panel { padding: 1rem; }
+.log-panel { display: flex; min-height: 0; flex-direction: column; }
+.trace-panel { border-top: 1px solid #a4afac; }
+.compact { align-items: center; }
+
+.messages {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: 0.8rem;
+	min-height: 0;
+	max-height: none;
+	overflow-y: auto;
+	padding: 1.5rem 0;
+}
+
+.message {
+	max-width: 100%;
+	border-left: 2px solid #255a52;
+	padding: 0.65rem 0.7rem;
+	background: #edf2f0;
+}
+
+.message.user { align-self: flex-end; border-left: 0; border-right: 2px solid #8b4a29; background: #f7f1e8; }
+.message-label { margin-bottom: 0.35rem; color: #50726d; font-size: 0.72rem; font-weight: 700; }
+.message-content { overflow-wrap: anywhere; line-height: 1.5; }
+.workspace-context { border-bottom: 1px solid #c5cecb; color: #506863; font-size: 0.72rem; line-height: 1.5; padding: 0.7rem 0; }
+
+.composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; border-top: 1px solid #c5cecb; padding-top: 0.75rem; }
+textarea { min-height: 4rem; resize: vertical; border: 1px solid #78908b; border-radius: 2px; background: #ffffff; color: #202a29; padding: 0.65rem; }
+textarea:focus { outline: 2px solid #255a52; outline-offset: 1px; }
+
+.terminal-key { display: grid; grid-template-columns: 8rem minmax(11rem, 0.7fr) minmax(0, 1.3fr); gap: 0.75rem; margin: 0.8rem 0 0; color: #8da69f; font-size: 0.65rem; font-weight: 700; }
+.timeline { display: grid; align-content: start; gap: 0; flex: 1; min-height: 0; margin: 0.4rem 0 0; overflow: auto; border: 1px solid #293735; background: #101817; color: #e0ece7; padding: 0.5rem 0; list-style: none; }
+.terminal-line { display: grid; grid-template-columns: 8rem minmax(11rem, 0.7fr) minmax(0, 1.3fr); gap: 0.75rem; border-bottom: 1px solid #253331; padding: 0.45rem 0.7rem; font-size: 0.73rem; line-height: 1.45; }
+.terminal-time { color: #80a89e; white-space: nowrap; }
+.terminal-event { color: #e0ece7; font-weight: 700; }
+.terminal-detail { min-width: 0; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; color: #c0d3cd; font: inherit; }
+.log-toggle { justify-self: start; grid-column: 3; border: 1px solid #4e6962; background: transparent; color: #a8cbc2; font-size: 0.68rem; padding: 0.2rem 0.45rem; }
+.log-toggle:hover { background: #243936; }
+
+.span-list { display: grid; max-height: 6rem; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; margin-top: 0.75rem; overflow-y: auto; }
+.span-item { display: grid; gap: 0.25rem; border: 1px solid #c5cecb; padding: 0.5rem; }
+.span-item strong { font-size: 0.72rem; overflow-wrap: anywhere; }
+.span-item span { color: #506863; font-size: 0.68rem; }
+.empty-state { color: #8da69f; font-style: italic; line-height: 1.45; padding: 0.5rem 0.7rem; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 760px) {
+	body { overflow: hidden; }
+	.shell { height: calc(100dvh - 1rem); width: min(100% - 1rem, 700px); margin: 0.5rem auto; }
+	.topbar { align-items: start; flex-direction: column; padding: 1rem; }
+	.connection { max-width: none; text-align: left; }
+	.workspace { display: grid; min-height: 0; grid-template-columns: 1fr; grid-template-rows: minmax(220px, 0.42fr) minmax(0, 0.58fr); }
+	.conversation { min-height: 0; padding: 1rem; }
+	.observability { border-left: 0; border-top: 1px solid #8aa49f; }
+	.log-panel, .trace-panel { padding: 1rem; }
+	.composer { grid-template-columns: 1fr; }
+	button { min-height: 2.8rem; }
+	.download-button { min-height: 2.4rem; }
+	.terminal-key { display: none; }
+	.timeline { min-height: 0; }
+	.terminal-line { grid-template-columns: 1fr; gap: 0.2rem; }
+	.terminal-time { color: #80a89e; }
+	.log-toggle { grid-column: 1; }
+	.span-list { grid-template-columns: 1fr; }
+}
