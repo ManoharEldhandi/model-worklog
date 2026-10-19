@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+	ActivityLogSchema,
+	TraceActivityLogSchema,
 	isJsonValue,
 	type EventKind,
 	type JsonObject,
@@ -14,6 +16,8 @@ import {
 	type SessionRecord,
 	type TokenUsage,
 	type UnknownReason,
+	type ActivityLog,
+	type TraceActivityLog,
 } from 'model-worklog-schema';
 import { normalizeProviderUsage, type TokenUsageMapping, type UsageNormalization, type UsageProviderSelector } from './usage';
 
@@ -31,7 +35,9 @@ export type { TraceSpool, TraceSpoolEntry } from './tracing/spool';
 export { DiskTraceSpool, type DiskTraceSpoolOptions } from './tracing/diskSpool';
 export { ModelLoggerSpanExporter } from './tracing/otel';
 export { instrumentMcpClient, type McpClient, type McpInstrumentationOptions } from './tracing/integrations/mcp';
-export { formatSessionEventText, presentSessionEvent } from 'model-worklog-schema';
+export { buildSessionActivity, buildSessionLog, buildTraceActivity, buildTraceLog, formatActivityText, formatSessionEventText, presentSessionEvent } from 'model-worklog-schema';
+export type { ActivityCategory, ActivityEntry, ActivityResource, ActivitySource, ActivityStatus, ActivityTool } from 'model-worklog-schema';
+export type { ActivityLog, TraceActivityLog, LogEntry, LogOperation, LogUsage } from 'model-worklog-schema';
 
 export const DEFAULT_SUPERVISOR_URL = 'http://127.0.0.1:43199' as const;
 
@@ -247,6 +253,19 @@ export class LocalSupervisorClient {
 		};
 	}
 
+	async getLog(sessionId: string): Promise<ActivityLog> {
+		const response = ActivityLogSchema.safeParse(await this.request<unknown>(`/v1/sessions/${encodeURIComponent(sessionId)}/log`, 'GET'));
+		if (!response.success || response.data.sessionId !== sessionId) { throw new SupervisorRequestError(200, 'Supervisor returned a malformed or mismatched activity log.'); }
+		return response.data;
+	}
+
+	async getTraceLog(projectId: string, traceId: string, options: { readonly cursor?: string; readonly limit?: number } = {}): Promise<TraceActivityLog> {
+		const query = new URLSearchParams({ projectId, ...(options.cursor === undefined ? {} : { cursor: options.cursor }), ...(options.limit === undefined ? {} : { limit: String(options.limit) }) });
+		const parsed = TraceActivityLogSchema.safeParse(await this.request<unknown>(`/v2/traces/${encodeURIComponent(traceId)}/log?${query}`, 'GET'));
+		if (!parsed.success || parsed.data.projectId !== projectId || parsed.data.traceId !== traceId) { throw new SupervisorRequestError(200, 'Supervisor returned a malformed or mismatched trace log.'); }
+		return parsed.data;
+	}
+
 	private async request<T>(pathname: string, method: string, body?: JsonObject): Promise<T> {
 		let response: Response;
 		try {
@@ -280,6 +299,21 @@ export class WorklogSession {
 		readonly record: SessionRecord,
 		private readonly actor: string,
 	) {}
+
+	getLog(): Promise<ActivityLog> { return this.client.getLog(this.record.sessionId); }
+
+	async followLog(listener: (log: ActivityLog) => void | Promise<void>, options: FollowSessionEventsOptions = {}): Promise<void> {
+		const interval = options.intervalMs ?? 100;
+		if (!Number.isInteger(interval) || interval < 25) { throw new Error('intervalMs must be an integer of at least 25'); }
+		let revision = -1;
+		while (!options.signal?.aborted) {
+			const log = await this.getLog();
+			if (options.signal?.aborted) { return; }
+			if (log.cursor.nextSequence !== revision || log.state !== 'running') { await listener(log); revision = log.cursor.nextSequence; }
+			if (log.state !== 'running') { return; }
+			await delay(interval, undefined, { signal: options.signal }).catch((error: unknown) => { if (!options.signal?.aborted) { throw error; } });
+		}
+	}
 
 	message(text: string): Promise<SessionEvent> {
 		return this.client.emit(this.record.sessionId, this.actor, 'agent.message', { text });

@@ -60,7 +60,7 @@ function presentationFor(payload: JsonObject, kind: SessionEvent['kind']): Timel
 			const role = text(payload.role);
 			return {
 				title: role === 'user' ? 'User request' : role === 'assistant' || text(payload.source) === 'assistant-commentary' ? 'Assistant update' : 'Agent message',
-				details: details(detail('Message', text(payload.text))),
+				details: details(detail('Message', (payload.delta === true || payload.final === true) && typeof payload.text === 'string' ? payload.text : text(payload.text))),
 			};
 		}
 		case 'agent.summary': {
@@ -70,7 +70,7 @@ function presentationFor(payload: JsonObject, kind: SessionEvent['kind']): Timel
 				: source === 'reasoning-summary'
 					? 'Agent reasoning summary'
 					: 'Agent summary';
-			return { title, details: details(detail('Summary', text(payload.summary) ?? text(payload.message)), detail('Plan', payload.plan)) };
+			return { title, details: details(detail('Summary', (payload.delta === true || payload.final === true) && typeof payload.summary === 'string' ? payload.summary : text(payload.summary) ?? text(payload.message)), detail('Plan', payload.plan)) };
 		}
 		case 'instruction.loaded':
 			return { title: `Loaded instructions: ${text(payload.path) ?? 'source unavailable'}`, details: details(detail('Adapter', text(payload.adapter)), detail('Type', text(payload.memoryType)), detail('Reason', text(payload.loadReason)), detail('Triggered by', text(payload.triggerPath))) };
@@ -78,7 +78,7 @@ function presentationFor(payload: JsonObject, kind: SessionEvent['kind']): Timel
 			return { title: `Tool started: ${text(payload.tool) ?? 'unnamed tool'}`, details: details(detail('Target path', toolPath(payload)), detail('Arguments', payload.arguments)) };
 		case 'tool.completed':
 			return {
-				title: `${payload.success === true ? 'Tool completed' : 'Tool failed'}: ${text(payload.tool) ?? 'unnamed tool'}`,
+				title: `${payload.success === true ? 'Tool completed' : payload.success === false ? 'Tool failed' : 'Tool result received'}: ${text(payload.tool) ?? 'unnamed tool'}`,
 				details: details(detail('Result', payload.result), detail('Error', text(payload.error))),
 			};
 		case 'command.started':
@@ -125,7 +125,7 @@ function presentationFor(payload: JsonObject, kind: SessionEvent['kind']): Timel
 		case 'process.failed':
 			return { title: 'Managed process failed', details: details(detail('Error', text(payload.message))) };
 		case 'log.truncated':
-			return { title: 'Log output was truncated', details: details(detail('Stream', text(payload.stream)), detail('Omitted characters', payload.omittedCharacters), detail('Retention limit', payload.limit)) };
+			return { title: 'Log output was truncated', details: details(detail('Details', text(payload.message)), detail('Stream', text(payload.stream)), detail('Omitted characters', payload.omittedCharacters), detail('Retention limit', payload.limit), detail('Pending snapshots', payload.pending), detail('Dropped snapshots', payload.dropped)) };
 		case 'session.started':
 			return { title: `Session started: ${text(payload.runMode) ?? 'unknown'} run`, details: details(detail('Actor', text(payload.actor))) };
 		case 'session.completed':
@@ -133,7 +133,7 @@ function presentationFor(payload: JsonObject, kind: SessionEvent['kind']): Timel
 		case 'session.interrupted':
 			return { title: 'Session stopped', details: [] };
 		case 'session.failed':
-			return { title: 'Session failed', details: details(detail('State', text(payload.state))) };
+			return { title: 'Session failed', details: details(detail('Error', text(payload.message)), detail('State', text(payload.state))) };
 		case 'adapter.lifecycle':
 			return {
 				title: `${humanize(text(payload.adapter) ?? 'adapter')}: ${humanize(text(payload.phase) ?? 'status update')}`,

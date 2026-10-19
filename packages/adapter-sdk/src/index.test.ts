@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { LocalSupervisorClient } from './index';
+import { buildSessionActivity, buildSessionLog, buildTraceActivity, formatActivityText, LocalSupervisorClient } from './index';
 
 function sessionBody(): Record<string, unknown> {
 	return {
@@ -14,6 +14,42 @@ function sessionBody(): Record<string, unknown> {
 test('rejects a remote supervisor URL', () => {
 	assert.throws(() => new LocalSupervisorClient({ supervisorUrl: 'https://example.com', token: 'secret' }), /loopback/);
 	assert.throws(() => new LocalSupervisorClient({ supervisorUrl: 'https://127.0.0.1:43199', token: 'secret' }), /loopback HTTP/);
+});
+
+test('SDK retrieves already-processed backend logs and validates scope and response shape', async () => {
+	const log = buildSessionLog([], { sessionId: 'ses_sdk', state: 'completed' });
+	const client = new LocalSupervisorClient({ supervisorUrl: 'http://127.0.0.1:43199', token: 'test-token',
+		fetchImpl: async (url) => { assert.equal(new URL(url).pathname, '/v1/sessions/ses_sdk/log'); return new Response(JSON.stringify(log)); } });
+	assert.deepEqual(await client.getLog('ses_sdk'), log);
+	for (const invalid of [{ ...log, sessionId: 'other' }, { ...log, entries: [{ title: 'not a real entry' }] }]) {
+		const invalidClient = new LocalSupervisorClient({ supervisorUrl: 'http://127.0.0.1:43199', token: 'test-token', fetchImpl: async () => new Response(JSON.stringify(invalid)) });
+		await assert.rejects(invalidClient.getLog('ses_sdk'), /malformed or mismatched/);
+	}
+});
+
+test('SDK follows complete semantic snapshots without making the consumer parse or group events', async () => {
+	let reads = 0;
+	const input = [{ schemaVersion: 1, eventId: 'read-one', sessionId: 'ses_sdk', sequence: 1, occurredAt: '2026-10-19T10:00:00.000Z',
+		kind: 'file.read' as const, actor: 'application', evidenceGrade: 'model-declared' as const, payload: { path: 'one.ts' }, redaction: { policyVersion: '1', replacements: 0, truncated: false } }];
+	const client = new LocalSupervisorClient({ supervisorUrl: 'http://127.0.0.1:43199', token: 'test-token', fetchImpl: async (url) => {
+		if (new URL(url).pathname === '/v1/sessions') { return new Response(JSON.stringify({ session: sessionBody() })); }
+		reads += 1;
+		return new Response(JSON.stringify(buildSessionLog(reads === 1 ? input : [...input, { ...input[0]!, eventId: 'read-two', sequence: 2, payload: { path: 'two.ts' } }], { state: reads === 1 ? 'running' : 'completed' })));
+	} });
+	const session = await client.startSession({ workspacePath: '/workspace', actor: 'application' });
+	const titles: string[] = [];
+	await session.followLog((log) => { titles.push(log.entries[0]?.title ?? ''); }, { intervalMs: 25 });
+	assert.deepEqual(titles, ['Read 1 file', 'Read 2 files']);
+});
+
+test('SDK exposes the shared activity format for application and extension consumers', () => {
+	assert.deepEqual(buildSessionActivity([]), []);
+	assert.deepEqual(buildTraceActivity([]), []);
+	const activity = buildSessionActivity([{ schemaVersion: 1, eventId: 'read', sessionId: 'session', sequence: 1,
+		occurredAt: '2026-10-18T10:00:00.000Z', kind: 'file.read', actor: 'custom-application', evidenceGrade: 'model-declared',
+		payload: { path: 'document.txt', tool: 'custom.fetch' }, redaction: { policyVersion: '1', replacements: 0, truncated: false } }]);
+	assert.match(activity.flatMap(formatActivityText).join('\n'), /Read 1 file/);
+	assert.match(activity.flatMap(formatActivityText).join('\n'), /custom.fetch/);
 });
 
 test('emits declared activity and reported usage through the local protocol', async () => {

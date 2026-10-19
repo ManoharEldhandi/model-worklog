@@ -36,4 +36,8 @@ const supervisorSource = await readFile(resolve('apps/local-supervisor/src/versi
 if (/export const SUPERVISOR_VERSION = '([^']+)'/.exec(supervisorSource)?.[1] !== expected) {
 	throw new Error('supervisor source version does not match the release manifests');
 }
-console.log(`Release versions, internal dependencies, and supervisor source verified: ${expected}`);
+const cliSource = await readFile(resolve('apps/cli/src/constants.ts'), 'utf8');
+if (/export const CLI_VERSION = '([^']+)'/.exec(cliSource)?.[1] !== expected) {
+	throw new Error('CLI source version does not match the release manifests');
+}
+console.log(`Release versions, internal dependencies, and runtime versions verified: ${expected}`);

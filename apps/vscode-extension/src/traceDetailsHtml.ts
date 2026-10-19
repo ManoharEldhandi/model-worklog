@@ -11,6 +11,12 @@ export function traceDetailsHtml(): string {
   * { box-sizing: border-box; }
   body { margin: 0; padding: 12px 16px 24px; }
   h1 { font-size: 14px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+  h2 { font-size: 12px; font-weight: 600; margin: 16px 0 4px; }
+  .activity-time { color: var(--vscode-descriptionForeground); font: 11px var(--vscode-editor-font-family); }
+  .activity[data-status="failed"] > summary { color: var(--vscode-errorForeground); }
+  .activity[data-status="unknown"] > summary { color: var(--vscode-editorWarning-foreground); }
+  .activity-fields { margin: 0 0 12px 14px; }
+  .capture-info { color: var(--vscode-descriptionForeground); font-size: 12px; }
   #meta, #status { color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; margin: 4px 0; }
   #warnings { padding: 8px 0 12px 18px; margin: 0; border-bottom: 1px solid var(--vscode-panel-border); overflow-wrap: anywhere; }
   details { min-width: 0; border-bottom: 1px solid var(--vscode-panel-border); }
@@ -29,7 +35,7 @@ export function traceDetailsHtml(): string {
   [hidden] { display: none !important; }
 </style></head><body>
 <header><h1 id="title">Trace Details</h1><div id="meta"></div></header>
-<p id="status" role="status">No trace selected.</p><ul id="warnings"></ul>
+<p id="status" role="status">No trace selected.</p><details class="capture-info"><summary>Capture information</summary><ul id="warnings"></ul></details>
 <main id="content" aria-label="Captured spans"></main>
 <button id="more" type="button" hidden>Load More Spans</button>
 <script nonce="${nonce}">
@@ -58,6 +64,47 @@ export function traceDetailsHtml(): string {
     warnings.hidden = model.warnings.length === 0;
     content.replaceChildren();
     content.setAttribute('aria-busy', String(model.busy));
+    const activities = document.createElement('section');
+    if (model.activity.length) activities.append(text('h2', 'Activity / UTC'));
+    for (const activity of model.activity) {
+      const item = document.createElement('details');
+      item.className = 'activity';
+      item.dataset.status = activity.status;
+      const activityKey = 'activity:' + activity.id;
+      item.open = expanded.has(activityKey);
+      const heading = document.createElement('summary');
+      heading.append(text('span', activity.startedAt.slice(11, 23) + 'Z  ', 'activity-time'), text('span', activity.title), text('span', activity.status, 'span-meta'));
+      item.append(heading);
+      const fields = document.createElement('div');
+      fields.className = 'activity-fields';
+      let populated = false;
+      function populateActivity() {
+        if (populated || !item.open) return;
+        populated = true;
+        if (activity.resources.length) fields.append(text('pre', activity.resources.map(resource => resource.path + (resource.count > 1 ? ' (' + resource.count + ' reads)' : '')).join('\\n')));
+        if (activity.tools.length) fields.append(text('pre', activity.tools.map(tool => (tool.server ? tool.server + ' / ' : '') + tool.name).join('\\n')));
+        for (const field of activity.details) fields.append(text('h2', field.label), text('pre', field.value));
+        for (const warning of activity.warnings) fields.append(text('p', warning, 'warning'));
+      }
+      populateActivity();
+      item.append(fields);
+      item.addEventListener('toggle', () => {
+        if (!item.isConnected) return;
+        if (item.open) expanded.add(activityKey); else expanded.delete(activityKey);
+        populateActivity(); persist();
+      });
+      activities.append(item);
+    }
+    content.append(activities);
+    const records = document.createElement('details');
+    records.open = expanded.has('span-records');
+    records.append(text('summary', 'Span records / ' + model.spans.length));
+    records.addEventListener('toggle', () => {
+      if (!records.isConnected) return;
+      if (records.open) expanded.add('span-records'); else expanded.delete('span-records');
+      persist();
+    });
+    content.append(records);
     const nodes = new Map();
     for (const span of model.spans) {
       const element = document.createElement('details');
@@ -96,7 +143,7 @@ export function traceDetailsHtml(): string {
       while (ancestor && depth <= 16) { depth += 1; ancestor = nodes.get(ancestor.parentId); }
       const parent = depth <= 16 ? nodes.get(span.parentId) : undefined;
       if (depth > 16) node.element.append(text('p', 'Deep hierarchy shown at top level; parent IDs retained.', 'warning'));
-      (parent ? parent.children : content).append(node.element);
+      (parent ? parent.children : records).append(node.element);
     }
     more.hidden = !model.more;
     more.disabled = model.busy;

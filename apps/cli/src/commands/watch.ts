@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { formatSessionEventText, type EventKind, type SessionEvent } from 'model-worklog-schema';
+import { ActivityLogSchema, formatActivityText, type SessionEvent } from 'model-worklog-schema';
 
 import { ExitCode } from '../constants';
 import type { CommandContext } from '../context';
@@ -52,12 +52,6 @@ function queryPath(sessionId: string, afterSequence: number, options: WatchOptio
 	return `/v1/sessions/${encodeURIComponent(sessionId)}/events?${query.toString()}`;
 }
 
-function writePrettyEvent(context: CommandContext, event: SessionEvent): void {
-	for (const line of formatSessionEventText(event)) {
-		writeLine(context.stdout, line);
-	}
-}
-
 export async function watchCommand(context: CommandContext, sessionId: string | undefined, options: WatchOptions): Promise<ExitCode> {
 	if (sessionId === undefined) {
 		writeLine(context.stderr, 'Usage: model-worklog watch <session-id> [--once] [--after-sequence <n>]');
@@ -71,8 +65,31 @@ export async function watchCommand(context: CommandContext, sessionId: string | 
 	}
 	let cursor = afterSequence;
 	const collected: SessionEvent[] = [];
+	const printed = new Set<string>();
 	if (context.format === 'pretty') {
 		writeLine(context.stdout, `Watching session ${sessionId} from sequence ${cursor + 1}`);
+		for (;;) {
+			const outcome = await requestSupervisor<unknown>(context, `/v1/sessions/${encodeURIComponent(sessionId)}/log`);
+			if (outcome.kind === 'error') { writeLine(context.stderr, outcome.message); return ExitCode.Unavailable; }
+			const parsed = ActivityLogSchema.safeParse(outcome.data);
+			if (!parsed.success || parsed.data.sessionId !== sessionId) { writeLine(context.stderr, 'Supervisor returned an invalid activity log.'); return ExitCode.Internal; }
+			const snapshot = parsed.data;
+			const terminal = options.once || snapshot.state !== 'running';
+			const visible = snapshot.entries.filter((entry) => entry.category !== 'usage');
+			const entries = terminal ? snapshot.entries : visible.slice(0, -1);
+			for (const entry of entries) {
+				if (printed.has(entry.id) || (!terminal && entry.status === 'running') || !entry.sources.some((source) => (source.sequence ?? 0) > afterSequence)) { continue; }
+				if (values(options.kind).length > 0 && !entry.sources.some((source) => values(options.kind).includes(source.kind))) { continue; }
+				if (values(options.grade).length > 0 && !entry.sources.some((source) => values(options.grade).includes(source.evidenceGrade))) { continue; }
+				if (values(options.actor).length > 0 && !values(options.actor).includes(entry.actor)) { continue; }
+				if (options.path !== undefined && !entry.resources.some((resource) => resource.path.includes(options.path ?? ''))) { continue; }
+				if (options.command !== undefined && !entry.title.includes(options.command)) { continue; }
+				for (const line of formatActivityText(entry)) { writeLine(context.stdout, line); }
+				printed.add(entry.id);
+			}
+			if (terminal) { return ExitCode.Ok; }
+			await delay(intervalMs);
+		}
 	}
 
 	for (;;) {
@@ -84,9 +101,7 @@ export async function watchCommand(context: CommandContext, sessionId: string | 
 		const snapshot = outcome.data;
 		for (const event of snapshot.events) {
 			collected.push(event);
-			if (context.format === 'pretty') {
-				writePrettyEvent(context, event);
-			} else if (context.format === 'jsonl') {
+			if (context.format === 'jsonl') {
 				writeJsonLine(context.stdout, event);
 			}
 		}

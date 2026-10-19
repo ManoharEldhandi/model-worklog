@@ -312,7 +312,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 				actor: observation.actor ?? 'integration',
 				evidenceGrade: observation.evidenceGrade ?? 'model-declared',
 				...(identifier === undefined ? {} : { correlationId: identifier }),
-				payload: usagePayload(normalized),
+				payload: { ...usagePayload(normalized), reportedFields: ['inputTokens', 'outputTokens', 'totalTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens'].filter((field) => usage[field as keyof TokenUsage] !== undefined) },
 			});
 			const session = await this.requireSession(sessionId);
 			const previous = session.tokenUsage.status === 'reported' ? session.tokenUsage : undefined;

@@ -3,16 +3,16 @@
 Instrument your application with the TypeScript SDK, an OTel exporter, or the
 MCP wrapper; send traces to the same-host collector and inspect them in VS Code.
 No CLI is required. Use Node.js **>=22.13** for the whole JavaScript project.
-This guide targets upcoming **0.2.0**: new tracing packages are not yet published.
-Use the checkout until the operator publishes them; older registry versions may
-not expose these APIs.
+This guide targets **2.1.0**. GitHub source/VSIX releases and npm publication are
+separate. Use the checkout until the operator publishes matching registry packages;
+older registry versions may not expose these APIs.
 
 ## Operator Bootstrap
 
-After 0.2.0 publication, install the operator and application packages:
+After npm publication, install the matching operator and application packages:
 
 ```sh
-npm install model-worklog-supervisor@0.2.0 model-worklog-sdk@0.2.0
+npm install model-worklog-supervisor@2.1.0 model-worklog-sdk@2.1.0
 ```
 
 This self-contained JavaScript example owns the collector lifecycle. Admin access

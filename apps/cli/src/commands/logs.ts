@@ -2,12 +2,25 @@ import { ExitCode } from '../constants';
 import type { CommandContext } from '../context';
 import { writeJson, writeJsonLine, writeLine } from '../output';
 import { requestSupervisor, type EventsResult, type SessionResult } from '../supervisorApi';
-import { formatSessionEventText } from 'model-worklog-schema';
+import { ActivityLogSchema } from 'model-worklog-schema';
 
 export async function logsCommand(context: CommandContext, sessionId: string | undefined): Promise<ExitCode> {
 	if (sessionId === undefined) {
 		writeLine(context.stderr, 'Usage: model-worklog logs <session-id>');
 		return ExitCode.InvalidInvocation;
+	}
+	if (context.format === 'pretty') {
+		const [session, result] = await Promise.all([
+			requestSupervisor<SessionResult>(context, `/v1/sessions/${encodeURIComponent(sessionId)}`),
+			requestSupervisor<unknown>(context, `/v1/sessions/${encodeURIComponent(sessionId)}/log`),
+		]);
+		if (session.kind === 'error' || result.kind === 'error') { writeLine(context.stderr, session.kind === 'error' ? session.message : result.kind === 'error' ? result.message : 'Log unavailable'); return ExitCode.Unavailable; }
+		const parsed = ActivityLogSchema.safeParse(result.data);
+		if (!parsed.success || parsed.data.sessionId !== sessionId) { writeLine(context.stderr, 'Supervisor returned an invalid activity log.'); return ExitCode.Internal; }
+		writeLine(context.stdout, `Log: ${session.data.session.title ?? sessionId} (${parsed.data.state}, ${session.data.session.runMode})`);
+		writeLine(context.stdout, `Session: ${sessionId}`);
+		for (const line of parsed.data.lines) { writeLine(context.stdout, line); }
+		return ExitCode.Ok;
 	}
 	const [sessionOutcome, eventsOutcome] = await Promise.all([
 		requestSupervisor<SessionResult>(context, `/v1/sessions/${encodeURIComponent(sessionId)}`),
@@ -31,19 +44,5 @@ export async function logsCommand(context: CommandContext, sessionId: string | u
 		writeJson(context.stdout, { schemaVersion: 1, command: 'logs', result: { session: sessionOutcome.data.session, events: eventsOutcome.data.events } });
 		return ExitCode.Ok;
 	}
-	const session = sessionOutcome.data.session;
-	writeLine(context.stdout, `Log: ${session.title ?? session.sessionId} (${session.state}, ${session.runMode})`);
-	if (session.title !== undefined) {
-		writeLine(context.stdout, `Session: ${session.sessionId}`);
-	}
-	for (const event of eventsOutcome.data.events) {
-		for (const line of formatSessionEventText(event)) {
-			writeLine(context.stdout, line);
-		}
-	}
-	const tokens = session.tokenUsage.status === 'reported'
-		? `Tokens: ${session.tokenUsage.totalTokens} total (${session.tokenUsage.source}; ${session.tokenUsage.providers.length === 0 ? 'provider unknown' : `providers ${session.tokenUsage.providers.join(', ')}`}; ${session.tokenUsage.models.length === 0 ? 'model unknown' : `models ${session.tokenUsage.models.join(', ')}`}; input ${session.tokenUsage.inputTokens}, output ${session.tokenUsage.outputTokens}, reasoning ${session.tokenUsage.reasoningTokens}, cache read ${session.tokenUsage.cacheReadTokens}, cache write ${session.tokenUsage.cacheWriteTokens})`
-		: `Tokens: unknown (${session.tokenUsage.reason})`;
-	writeLine(context.stdout, tokens);
 	return ExitCode.Ok;
 }

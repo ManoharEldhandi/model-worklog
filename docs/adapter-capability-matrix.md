@@ -1,7 +1,7 @@
 # Capture Capabilities
 
 Prefer explicit SDK or OTel instrumentation. These capabilities describe the
-upcoming 0.2.0 checkout, not a claim that new tracing packages are already
+2.1.0 checkout, not a claim that matching npm packages are already
 published. All tracing paths use the same-host collector; no CLI is required.
 
 ## Tracing Paths

@@ -17,6 +17,7 @@ export interface CopilotRelayOptions {
 	readonly task: string;
 	readonly model?: string;
 	readonly maxDurationMs: number;
+	readonly captureReasoning?: boolean;
 }
 
 export interface CopilotRelaySink {
@@ -55,6 +56,7 @@ interface TelemetrySpan {
 	readonly type?: unknown;
 	readonly name?: unknown;
 	readonly attributes?: unknown;
+	readonly spanId?: unknown;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -103,10 +105,12 @@ export function copilotTelemetryUsage(content: string, fallbackModel?: string): 
 			const cacheReadTokens = count(attributes['gen_ai.usage.cache_read.input_tokens']);
 			const reasoningTokens = count(attributes['gen_ai.usage.reasoning.output_tokens']);
 			const model = stringValue(attributes['gen_ai.response.model']) ?? stringValue(attributes['gen_ai.request.model']) ?? fallbackModel;
+			const providerResponseId = stringValue(attributes['gen_ai.response.id']);
 			usage.push({
 				source: 'provider-reported',
 				provider: stringValue(attributes['gen_ai.provider.name']) ?? 'github-copilot',
 				...(model === undefined ? {} : { model }),
+				...(providerResponseId === undefined ? {} : { providerResponseId }),
 				inputTokens,
 				outputTokens,
 				cacheReadTokens,
@@ -132,6 +136,8 @@ export class CopilotCliRelay implements CopilotRelayControl {
 	private reader: Interface | undefined;
 	private telemetryDirectory: string | undefined;
 	private timeout: ReturnType<typeof setTimeout> | undefined;
+	private usageTimer: ReturnType<typeof setInterval> | undefined;
+	private reportedUsageCount = 0;
 	private interruptTimeout: ReturnType<typeof setTimeout> | undefined;
 	private terminal = false;
 	private interruptRequested = false;
@@ -149,7 +155,7 @@ export class CopilotCliRelay implements CopilotRelayControl {
 			unknown: (kind, reason, payload = {}) => this.sink.append({ kind, actor: 'copilot-cli', evidenceGrade: 'unknown', unknownReason: reason, payload }),
 			reportProviderUsage: async () => undefined,
 			complete: async () => undefined,
-		}, { workspacePath: options.workspacePath });
+		}, { workspacePath: options.workspacePath, captureReasoning: options.captureReasoning });
 	}
 
 	async start(): Promise<void> {
@@ -202,6 +208,8 @@ export class CopilotCliRelay implements CopilotRelayControl {
 			this.timeout = setTimeout(() => {
 				void this.cancel('duration-limit');
 			}, this.options.maxDurationMs);
+			this.usageTimer = setInterval(() => { void this.enqueue(() => this.recordUsage()); }, 250);
+			this.usageTimer.unref();
 			await this.sink.append({
 				kind: 'adapter.lifecycle', actor: 'copilot-cli', evidenceGrade: 'observed-native',
 				payload: { adapter: 'copilot-cli', phase: 'started', ...(this.options.model === undefined ? {} : { model: this.options.model }) },
@@ -258,8 +266,10 @@ export class CopilotCliRelay implements CopilotRelayControl {
 		} catch {
 			return;
 		}
-		for (const usage of copilotTelemetryUsage(content, this.options.model)) {
-			await this.sink.recordUsage(usage, 'observed-native');
+		const reports = copilotTelemetryUsage(content, this.options.model);
+		for (const usage of reports.slice(this.reportedUsageCount)) {
+			await this.sink.recordUsage({ ...usage, providerResponseId: usage.providerResponseId ?? `copilot:${this.options.sessionId}:${this.reportedUsageCount}` }, 'observed-native');
+			this.reportedUsageCount += 1;
 		}
 	}
 
@@ -279,6 +289,7 @@ export class CopilotCliRelay implements CopilotRelayControl {
 			return;
 		}
 		this.terminal = true;
+		clearInterval(this.usageTimer);
 		if (this.timeout !== undefined) {
 			clearTimeout(this.timeout);
 		}

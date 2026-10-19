@@ -3,6 +3,17 @@
 
 ## Unreleased
 
+## 2.1.0 - 2026-10-19
+
+- Move readable logs into a shared semantic backend contract with ready-to-use SDK snapshots and text output.
+- Group related file reads, pair tool/MCP calls with results, and retain source references and sub-agent boundaries.
+- Capture explicitly enabled, readable provider-exposed reasoning and streaming messages without retaining opaque or encrypted fields.
+- Consolidate provider usage into one evolving summary; preserve missing, partial and conflicting counters.
+- Separate protocol diagnostics from user activity and fix empty stream rows, duplicated responses and stale running states.
+- Make CLI and VS Code consume the semantic log contract, with role-scoped trace-log endpoints and safe exports.
+- Add a live Copilot CLI dashboard and repair stale Logger-owned hooks without blocking agent tools.
+- Align package, supervisor and CLI versions at 2.1.0. Existing wire schema versions remain unchanged.
+
 ## 0.2.0 - 2026-10-13
 
 - Add an SDK-first Traces view with nested spans, privacy and coverage details, reported usage, paging, refresh, and safe JSON export.

@@ -8,8 +8,9 @@ through the local API. The collector stores redacted traces in SQLite and
 accepts OpenTelemetry over HTTP, including protobuf exporters used by Python.
 
 Metadata-only capture is the default. Content requires explicit opt-in. Hidden
-reasoning and uninstrumented actions are not observable. This repository's new
-tracing release must be published before these APIs are available from registries.
+reasoning and uninstrumented actions are not observable. This repository targets
+2.1.0; GitHub source/VSIX releases and npm/Marketplace publication are separate.
+Use matching locally built packages until their registry publication.
 
 ## Install
 
@@ -106,6 +107,13 @@ summary; the export never contains collector credentials.
 - Instrumented agent, model, tool, MCP, retrieval, embedding, memory, and workflow spans.
 - Parent relationships, links, timing, state, optional redacted content, and reported usage.
 - Capture limitations, redactions, truncation, missing parents, and explicit delivery failures.
+
+Readable activity logs group consecutive file reads into one timestamped segment,
+pair correlated tools with their results, and keep failures and capture gaps
+visible. The dashboard, VS Code and CLI pretty logs share the same deterministic
+projection. Structured activities retain source references for later search;
+the original captured records remain the evidence. See the
+[activity model](docs/evidence-model.md#readable-activity-projection).
 
 ## Privacy
 

@@ -1,8 +1,8 @@
 # model-worklog-sdk
 
-Node.js >=22.13 SDK for explicit local tracing. Targets upcoming **0.2.0**.
-New tracing APIs remain unpublished until the operator releases the packages.
-Use the checkout meanwhile; after publication install `model-worklog-sdk@0.2.0`.
+Node.js >=22.13 SDK for explicit local tracing. This reference targets **2.1.0**.
+GitHub source/VSIX releases and npm publication are separate. Use the checkout
+until the operator publishes `model-worklog-sdk@2.1.0` to the registry.
 
 ## Local Setup
 
@@ -61,7 +61,76 @@ path, without credentials/query/fragment. Redirects and remote hosts are rejecte
   `captureOutput`. Missing usage stays unknown, not zero. Do not sum cumulative
   streaming usage chunks or infer opaque billing totals.
 
+## Readable Logs
+
+Prefer backend-owned semantic snapshots over processing raw events in a UI:
+
+```ts
+const log = await session.getLog();
+console.log(log.lines.join('\n'));
+
+await session.followLog(snapshot => {
+	renderLog(snapshot.entries, snapshot.usage, snapshot.capture);
+});
+```
+
+Here `session` is a `WorklogSession` created by `LocalSupervisorClient.startSession`
+and `renderLog` is your application renderer. Each callback receives a complete,
+schema-validated replacement snapshot, not append-only rows: entries and the single
+usage summary have stable IDs while running. No consumer-side grouping, token
+aggregation, provider parsing or reasoning reconstruction is needed. `diagnostics`
+retains transport/control events outside the user-facing `entries`; `operations`
+contains per-tool inputs, results, errors and source IDs. Missing values stay
+unknown. `lines` is a ready-to-use plain-text representation.
+
+`LocalSupervisorClient.getLog(sessionId)` also reads existing sessions. For SDK or
+OTLP traces, an explicitly scoped reader can call
+`client.getTraceLog(projectId, traceId, { cursor?, limit? })`. Trace pages retain
+`nextCursor` and explicitly partial usage; a page is not a complete execution or
+a point-in-time snapshot. Writer credentials cannot read logs. Keep collector
+credentials in a trusted application backend, never browser code.
+
+SDK applications, OTLP producers and the extension share a versioned activity
+format; it is not specific to Copilot or a fixed file count. Group sizes come
+from captured operations. Failures, separate actors/parents, commentary and
+capture gaps remain distinct instead of being folded into an optimistic summary.
+
+Application backends can format retained records without a second parser:
+
+```ts
+import { buildTraceActivity, formatActivityText } from 'model-worklog-sdk';
+
+const activity = buildTraceActivity(storedSpans);
+const readableLog = activity.flatMap(formatActivityText).join('\n');
+```
+
+Supply validated stored spans from your authorized reader. `buildSessionActivity`
+also accepts legacy canonical session events; the corresponding `ActivityEntry`
+types are exported by the SDK. Keep source records and references for export or
+later retrieval. Formatting is deterministic, not an LLM-generated account.
+
+For a custom file tool with any name, attach `file.operation` and `file.path`
+to its `kind: 'tool'` span. Operations are `read`, `created`, `modified`, `deleted`
+or `changed`; optional `file.type` distinguishes a `file` or `directory`.
+Explicit fields take precedence over known read-tool names. Other tools remain
+named tool operations; names alone do not prove file access. MCP wrappers retain
+their server and method, and other span kinds retain their own categories.
+
+To retain these fields in metadata mode, explicitly permit `file.operation`,
+`file.path` and, if used, `file.type` in both SDK and collector
+`allowedAttributeKeys`. Paths can be sensitive; presentation does not relax either
+privacy policy. Only supplied instrumentation is observable, not all application
+activity. See the [activity contract](../../docs/evidence-model.md).
+
 ## Content And Privacy
+
+The `CopilotCliAdapter` accepts `captureReasoning: true` to record readable
+provider-exposed `assistant.reasoning` / `assistant.reasoning_delta` fields, or
+`assistant.message.reasoningText` when separately exposed. The default is false.
+Opaque/encrypted fields are never decoded or retained, and unavailable reasoning
+is capability metadata rather than a repeated log row. This does not expose
+provider-hidden reasoning. Managed Copilot launch requests use the same explicit
+option; the extension asks for consent and the sample dashboard opts in.
 
 Metadata-only is the default. Content requires **both** SDK
 `privacy: { mode: 'redacted-content' }` and the operator's

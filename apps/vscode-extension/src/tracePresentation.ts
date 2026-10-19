@@ -1,4 +1,4 @@
-import type { SpanUsage, StoredTraceSpan, TraceSummary } from 'model-worklog-schema';
+import { type ActivityEntry, type SpanUsage, type StoredTraceSpan, type TraceSummary } from 'model-worklog-schema';
 import { canAccessTrace } from './traceApi';
 import type { TraceState } from './traceController';
 import { publicStoredSpan, traceText, TRACE_CAPTURE_SCOPE } from './tracePrivacy';
@@ -31,6 +31,7 @@ export interface TraceDetailModel {
 	readonly notice: string;
 	readonly warnings: readonly string[];
 	readonly spans: readonly PresentedSpan[];
+	readonly activity: readonly ActivityEntry[];
 	readonly more: boolean;
 	readonly busy: boolean;
 }
@@ -43,12 +44,14 @@ export function presentTraceDetail(state: TraceState): TraceDetailModel {
 	if (!state.enabled) { notice = 'Model Logger is disabled.'; }
 	else if (state.selectedTraceId === undefined) { notice = 'No trace selected.'; }
 	else if (state.detailPhase === 'ready' && forest.nodes.length === 0) { notice = 'No stored spans in this trace.'; }
+	else if (notice === '' && summary?.incomplete) { notice = 'Incomplete capture'; }
 	return {
 		key: `${state.projectId}/${state.selectedTraceId ?? ''}`,
 		title: summary === undefined ? 'Trace Details' : traceText(summary.name || summary.traceId),
 		meta: `${state.projectId}${state.selectedTraceId === undefined ? '' : ` / ${state.selectedTraceId}`} | ${state.detailPhase}${state.busy ? ' | refreshing' : ''}`,
 		notice, warnings: state.selectedTraceId === undefined || !readable ? [] : traceWarnings(forest, summary, state.detailCursor !== null),
 		spans: forest.nodes.map(presentSpan), more: readable && state.detailCursor !== null, busy: state.busy,
+		activity: readable ? state.log?.entries ?? [] : [],
 	};
 }
 

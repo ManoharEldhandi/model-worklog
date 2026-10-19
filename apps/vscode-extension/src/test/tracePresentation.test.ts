@@ -63,6 +63,10 @@ suite('Trace presentation and export', () => {
 		const exported = await exportTrace(api, 'app', traceId, new AbortController().signal, traceSummary({ spanCount: 3, incomplete: true }));
 		assert.deepStrictEqual(cursors, [null, 'next']);
 		assert.strictEqual(exported.spans.length, 2);
+		assert.strictEqual(exported.metadata.activitySchemaVersion, 1);
+		assert.strictEqual(exported.activity.filter((entry) => entry.category !== 'usage').length, 2);
+		assert.strictEqual(exported.activity.filter((entry) => entry.category === 'usage').length, 1);
+		assert.ok(exported.activity.every((entry) => entry.sources.every((source) => exported.spans.some((stored) => stored.span.spanId === source.spanId && stored.span.revision === source.revision))));
 		assert.strictEqual(exported.metadata.allAvailablePagesCollected, true);
 		assert.strictEqual(exported.metadata.underlyingExecutionComplete, false);
 		assert.deepStrictEqual(exported.metadata.missingParentSpanIds, ['9'.repeat(16)]);

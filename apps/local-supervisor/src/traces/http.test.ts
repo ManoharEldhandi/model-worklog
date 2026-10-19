@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { API_VERSION, TraceBatchAckSchema, TraceDetailSchema, TraceListSchema, TracePrincipalSchema } from 'model-worklog-schema';
+import { API_VERSION, TraceActivityLogSchema, TraceBatchAckSchema, TraceDetailSchema, TraceListSchema, TracePrincipalSchema } from 'model-worklog-schema';
 import { HttpTraceExporter, createModelLogger } from 'model-worklog-sdk';
 
 import { api, credential, fixture, traceSpan } from './fixtures.test';
@@ -25,6 +25,13 @@ test('real SDK logger and HTTP exporter ingest into the ephemeral supervisor', a
 	assert.equal(list.traces[0]?.incomplete, false);
 	const detail = TraceDetailSchema.parse(await (await api(supervisor, `/v2/traces/${list.traces[0]?.traceId}?projectId=project`, reader.token)).json());
 	assert.equal(detail.spans.length, 3);
+	const logPath = `/v2/traces/${list.traces[0]?.traceId}/log?projectId=project`;
+	const log = TraceActivityLogSchema.parse(await (await api(supervisor, logPath, reader.token)).json());
+	assert.equal(log.entries.filter((entry) => entry.category === 'usage').length, 1);
+	assert.equal(log.usage.counts.totalTokens, 10);
+	assert.equal(log.lines.some((line) => line.includes('Tokens used')), true);
+	assert.equal((await api(supervisor, logPath, writer.token)).status, 403);
+	assert.equal((await api(supervisor, `${logPath.replace('projectId=project', 'projectId=other')}`, reader.token)).status, 403);
 	assert.ok(detail.spans.every((stored) => stored.evidenceGrade === 'model-declared' && stored.span.revision === 2));
 	const health = await (await fetch(`${supervisor.url}/health`)).json() as { apiVersion: string; capabilities: { features: string[] } };
 	assert.equal(health.apiVersion, API_VERSION);

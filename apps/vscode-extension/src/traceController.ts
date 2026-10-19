@@ -1,4 +1,4 @@
-import { ProjectIdSchema, TraceIdSchema, type StoredTraceSpan, type TracePrincipal, type TraceSummary } from 'model-worklog-schema';
+import { buildTraceLog, ProjectIdSchema, TraceIdSchema, type StoredTraceSpan, type TraceActivityLog, type TracePrincipal, type TraceSummary } from 'model-worklog-schema';
 import { canAccessTrace, TraceApiError, type TraceAccess, type TraceApi } from './traceApi';
 import { readTraceList, readTraceSpans, TRACE_VIEW_PAGE_LIMIT } from './tracePages';
 import { TraceRequests } from './traceRequests';
@@ -14,6 +14,7 @@ export interface TraceState {
 	readonly nextCursor: string | null;
 	readonly selectedTraceId: string | undefined;
 	readonly spans: readonly StoredTraceSpan[];
+	readonly log: TraceActivityLog | undefined;
 	readonly detailPhase: TracePhase;
 	readonly detailNotice: string;
 	readonly detailCursor: string | null;
@@ -42,7 +43,7 @@ export class TraceController {
 		return () => clearTimeout(timer);
 	}) {
 		this.current = { enabled: false, projectId, phase: 'disabled', notice: 'Enable Model Logger to connect.', principal: undefined,
-			traces: [], nextCursor: null, selectedTraceId: undefined, spans: [], detailPhase: 'disabled', detailNotice: '', detailCursor: null, busy: false };
+			traces: [], nextCursor: null, selectedTraceId: undefined, spans: [], log: undefined, detailPhase: 'disabled', detailNotice: '', detailCursor: null, busy: false };
 	}
 
 	get state(): TraceState { return this.current; }
@@ -74,7 +75,7 @@ export class TraceController {
 		this.reset();
 		this.api = undefined;
 		this.patch({ enabled: false, phase: 'disabled', principal: undefined, notice: 'Model Logger is disabled.', traces: [], nextCursor: null,
-			selectedTraceId: undefined, spans: [], detailPhase: 'disabled', detailNotice: '', detailCursor: null });
+			selectedTraceId: undefined, spans: [], log: undefined, detailPhase: 'disabled', detailNotice: '', detailCursor: null });
 	}
 
 	async setProject(projectId: string): Promise<void> {
@@ -82,7 +83,7 @@ export class TraceController {
 		this.reset();
 		this.listPages = 1;
 		this.detailPages = 1;
-		this.patch({ projectId, principal: undefined, traces: [], nextCursor: null, selectedTraceId: undefined, spans: [], detailCursor: null, detailNotice: '', detailPhase: 'disabled' });
+		this.patch({ projectId, principal: undefined, traces: [], nextCursor: null, selectedTraceId: undefined, spans: [], log: undefined, detailCursor: null, detailNotice: '', detailPhase: 'disabled' });
 		await this.refresh();
 	}
 
@@ -102,7 +103,7 @@ export class TraceController {
 		await this.load('refresh', async (api, projectId, signal) => {
 			const principal = await api.identity(signal);
 			if (!canAccessTrace(principal, projectId, 'read')) {
-				return { principal, phase: 'unauthorized', notice: 'A reader or admin credential for this project is required.', traces: [], spans: [], detailPhase: 'unauthorized' };
+				return { principal, phase: 'unauthorized', notice: 'A reader or admin credential for this project is required.', traces: [], spans: [], log: undefined, detailPhase: 'unauthorized' };
 			}
 			const page = await readTraceList(api, projectId, this.listPages, signal);
 			this.listPages = page.pages;
@@ -123,7 +124,7 @@ export class TraceController {
 		if (traceId !== this.current.selectedTraceId) {
 			this.reset();
 			this.detailPages = 1;
-			this.patch({ selectedTraceId: traceId, spans: [], detailCursor: null, detailPhase: 'loading', detailNotice: 'Loading spans...' });
+			this.patch({ selectedTraceId: traceId, spans: [], log: undefined, detailCursor: null, detailPhase: 'loading', detailNotice: 'Loading spans...' });
 		}
 		await this.load('detail', (api, projectId, signal) => this.readDetail(api, projectId, traceId, signal), true);
 	}
@@ -137,7 +138,7 @@ export class TraceController {
 
 	clearSelection(): void {
 		this.reset();
-		this.patch({ selectedTraceId: undefined, spans: [], detailPhase: 'disabled', detailNotice: '', detailCursor: null });
+		this.patch({ selectedTraceId: undefined, spans: [], log: undefined, detailPhase: 'disabled', detailNotice: '', detailCursor: null });
 		this.poll();
 	}
 
@@ -167,7 +168,8 @@ export class TraceController {
 			for (const stored of page.items) {
 				if ((byId.get(stored.span.spanId)?.span.revision ?? 0) <= stored.span.revision) { byId.set(stored.span.spanId, stored); }
 			}
-			return { spans: [...byId.values()], detailCursor: page.nextCursor, detailPhase: 'ready', detailNotice: '' };
+			const spans = [...byId.values()];
+			return { spans, log: buildTraceLog(spans, { projectId, traceId, nextCursor: page.nextCursor }), detailCursor: page.nextCursor, detailPhase: 'ready', detailNotice: '' };
 		} catch (error) {
 			signal.throwIfAborted();
 			const denied = error instanceof TraceApiError && ['unauthorized', 'forbidden'].includes(error.kind);

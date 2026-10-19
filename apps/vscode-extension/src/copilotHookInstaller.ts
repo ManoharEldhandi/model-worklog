@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 const HOOK_FILE_NAME = 'model-worklog.json';
 const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SubagentStop', 'SessionEnd', 'ErrorOccurred'] as const;
+const HOOK_LAUNCHER = "import(require('node:url').pathToFileURL(process.argv[1]).href).catch(() => { process.stdout.write('{}\\n'); });";
 
 export interface CopilotHookInstallOptions {
 	readonly bridgePath: string;
@@ -46,7 +47,7 @@ function hookConfig(options: CopilotHookInstallOptions): string {
 		MODEL_WORKLOG_SUPERVISOR_URL: options.supervisorUrl,
 		...(options.modelWorklogHome === undefined ? {} : { MODEL_WORKLOG_HOME: options.modelWorklogHome }),
 	};
-	const entry = { type: 'command', exec: 'node', args: [options.bridgePath], env: environment, timeoutSec: 3 };
+	const entry = { type: 'command', exec: 'node', args: ['-e', HOOK_LAUNCHER, options.bridgePath], env: environment, timeoutSec: 3 };
 	return `${JSON.stringify({ version: 1, hooks: Object.fromEntries(HOOK_EVENTS.map((event) => [event, [entry]])) }, null, 2)}\n`;
 }
 

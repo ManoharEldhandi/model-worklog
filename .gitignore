@@ -21,4 +21,5 @@ tmp/
 .model-worklog/
 model-worklog*.bundle.json
 *.tgz
+artifacts/
 .eslintcache
