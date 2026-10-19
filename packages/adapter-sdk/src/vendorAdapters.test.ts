@@ -74,7 +74,7 @@ test('Codex App Server adapter maps commands, files, summaries, usage, and sessi
 		{ method: 'command.started', payload: { executable: 'npm test' }, correlationId: 'item-command' },
 		{ method: 'command.completed', payload: { executable: 'npm test', exitCode: 0, durationMs: 100 }, correlationId: 'item-command' },
 		{ method: 'file.changed', payload: { path: 'src/app.ts', operation: 'modified' }, correlationId: 'item-file' },
-		{ method: 'agent.summary', payload: { summary: 'Fixed the test.' }, correlationId: 'item-message' },
+		{ method: 'agent.summary', payload: { summary: 'Fixed the test.', final: true }, correlationId: 'item-message' },
 		{ method: 'usage:openai', payload: { model: 'gpt-5', usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } } },
 		{ method: 'adapter.lifecycle', payload: { adapter: 'codex-app-server', phase: 'thread-closed', threadId: 'thr-1' } },
 		{ method: 'complete', payload: 'completed' },
@@ -164,6 +164,48 @@ test('Copilot CLI adapter records visible messages and tools while suppressing r
 		{ method: 'agent.message', payload: { role: 'assistant', text: 'The test is fixed.', source: 'copilot-cli' }, correlationId: 'turn-1' },
 		{ method: 'adapter.lifecycle', payload: { adapter: 'copilot-cli', phase: 'result', exitCode: 0 } },
 	]);
+});
+
+test('Copilot explicitly captures exposed reasoning streams and ignores opaque reasoning fields', async () => {
+	const sink = new RecordingSink();
+	const adapter = new CopilotCliAdapter(sink, { captureReasoning: true });
+	await adapter.ingestEvent({ type: 'assistant.reasoning_delta', data: { reasoningId: 'r1', deltaContent: 'Inspect ' } });
+	await adapter.ingestEvent({ type: 'assistant.reasoning_delta', data: { reasoningId: 'r1', deltaContent: 'the parser.' } });
+	await adapter.ingestEvent({ type: 'assistant.reasoning', data: { reasoningId: 'r1', content: 'Inspect the parser.' } });
+	await adapter.ingestEvent({ type: 'assistant.message', data: { messageId: 'm1', content: 'I will read the parser.', reasoningOpaque: 'opaque-private', encryptedContent: 'encrypted-private' } });
+	assert.equal(sink.calls.filter((call) => call.method === 'agent.summary').length, 3);
+	assert.ok(sink.calls.slice(0, 3).every((call) => call.correlationId === 'reasoning:r1'));
+	assert.match(JSON.stringify(sink.calls), /Inspect the parser/);
+	assert.equal(JSON.stringify(sink.calls).includes('opaque-private'), false);
+	assert.equal(JSON.stringify(sink.calls).includes('encrypted-private'), false);
+});
+
+test('Copilot retains MCP identity, actual errors, live output sequence gaps and absent status', async () => {
+	const sink = new RecordingSink();
+	const adapter = new CopilotCliAdapter(sink);
+	await adapter.ingestEvent({ type: 'tool.execution_start', agentId: 'worker', data: { toolCallId: 'call', toolName: 'search', mcpServerName: 'docs', mcpToolName: 'lookup' } });
+	await adapter.ingestEvent({ type: 'tool.execution_complete', agentId: 'worker', data: { toolCallId: 'call', success: false, result: { content: 'partial result' }, error: { message: 'Server timeout' } } });
+	await adapter.ingestEvent({ type: 'tool.shell_output', data: { toolCallId: 'shell', text: 'hello', sequence: 0 } });
+	await adapter.ingestEvent({ type: 'tool.shell_output', data: { toolCallId: 'shell', text: 'duplicate', sequence: 0 } });
+	await adapter.ingestEvent({ type: 'tool.shell_output', data: { toolCallId: 'shell', text: 'world', stream: 'stderr', sequence: 2 } });
+	await adapter.ingestEvent({ type: 'tool.execution_complete', data: { toolCallId: 'orphan', toolName: 'custom' } });
+	assert.match(JSON.stringify(sink.calls[0]), /docs/);
+	assert.match(JSON.stringify(sink.calls[1]), /Server timeout/);
+	assert.match(JSON.stringify(sink.calls[1]), /partial result/);
+	assert.match(JSON.stringify(sink.calls[1]), /worker/);
+	assert.equal(sink.calls.filter((call) => call.method === 'process.output').length, 2);
+	assert.match(JSON.stringify(sink.calls), /missingChunks/);
+	assert.equal(JSON.stringify(sink.calls.at(-1)).includes('"success":false'), false);
+});
+
+test('unmapped provider types create one payload-free diagnostic rather than disappearing', async () => {
+	const sink = new RecordingSink();
+	const adapter = new CopilotCliAdapter(sink);
+	await adapter.ingestEvent({ type: 'future.operation', data: { privatePayload: 'not-retained' } });
+	await adapter.ingestEvent({ type: 'future.operation', data: { privatePayload: 'not-retained' } });
+	assert.equal(sink.calls.length, 1);
+	assert.equal(sink.calls[0]?.method, 'unknown:adapter.lifecycle:unsupported-capability');
+	assert.equal(JSON.stringify(sink.calls).includes('not-retained'), false);
 });
 
 test('Copilot CLI hook adapter preserves documented post-tool results', async () => {

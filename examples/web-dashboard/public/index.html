@@ -9,9 +9,12 @@
 <body>
 	<main class="shell">
 		<header class="topbar">
-			<div>
-				<p class="eyebrow">Local SDK demonstration</p>
+			<div class="brand">
+				<img src="/logo.png" width="32" height="32" alt="">
+				<div>
 				<h1>Model Worklog</h1>
+				<p class="eyebrow">Local activity</p>
+				</div>
 			</div>
 			<div class="connection" id="connection-status" aria-live="polite">Starting local collector</div>
 		</header>
@@ -20,22 +23,19 @@
 			<section class="conversation" aria-labelledby="chat-title">
 				<div class="section-heading">
 					<div>
-						<p class="eyebrow">Workspace prompt</p>
-						<h2 id="chat-title">Copilot review</h2>
+						<p class="eyebrow">Workspace</p>
+						<h2 id="chat-title">Workspace review</h2>
 					</div>
 					<span class="mode" id="provider-mode">Checking provider</span>
 				</div>
 				<p class="workspace-context" id="workspace-context">Preparing the isolated sample workspace</p>
 				<div class="messages" id="messages" aria-live="polite">
-					<div class="message assistant">
-						<p class="message-label">Assistant</p>
-						<p>Ask for a summary or review. Observable Copilot activity prints in the log.</p>
-					</div>
+					<p class="empty-state">No messages yet.</p>
 				</div>
 				<form class="composer" id="chat-form">
 					<label class="sr-only" for="message">Message</label>
-					<textarea id="message" name="message" maxlength="2000" placeholder="Ask about the trace, a project task, or anything else" required></textarea>
-					<button id="send-button" type="submit">Send</button>
+					<textarea id="message" name="message" maxlength="2000" placeholder="Review the inventory and pricing logic..." required></textarea>
+					<button id="send-button" type="submit" title="Send request" aria-label="Send request">&#8593;</button>
 				</form>
 			</section>
 
@@ -43,31 +43,40 @@
 				<section class="log-panel" aria-labelledby="log-title">
 					<div class="section-heading compact">
 						<div>
-							<p class="eyebrow">Live execution</p>
-							<h2 id="log-title">Terminal log</h2>
-						</div>
-						<span class="run-state" id="run-state">Idle</span>
-					</div>
-					<p class="terminal-key"><span>TIME</span><span>EVENT</span><span>DETAIL</span></p>
-					<ol class="timeline" id="timeline">
-						<li class="empty-state">Waiting for a prompt...</li>
-					</ol>
-				</section>
-
-				<section class="trace-panel" aria-labelledby="trace-title">
-					<div class="section-heading compact">
-						<div>
-							<p class="eyebrow">Stored trace</p>
-							<h2 id="trace-title">SDK spans</h2>
+							<p class="eyebrow" id="run-date">Execution</p>
+							<h2 id="log-title">Activity log</h2>
 						</div>
 						<div class="trace-actions">
-							<span class="trace-count" id="trace-count">0 spans</span>
-							<a class="download-button" id="download-link" aria-disabled="true" tabindex="-1">Download JSON</a>
+							<span class="run-state" id="run-state" role="status">Idle</span>
+							<a class="download-button" id="download-link" aria-disabled="true" tabindex="-1" title="Download captured JSON"><span aria-hidden="true">&#8595;</span> JSON</a>
 						</div>
 					</div>
-					<div class="span-list" id="span-list">
-						<p class="empty-state">A completed run will appear here.</p>
+					<div class="log-toolbar">
+						<fieldset class="view-switch" aria-label="Log view">
+							<label><input type="radio" name="log-view" value="activity" checked><span>Activity</span></label>
+							<label><input type="radio" name="log-view" value="spans"><span>SDK spans</span></label>
+						</fieldset>
+						<label class="follow-control"><input id="follow-log" type="checkbox" checked>Follow</label>
 					</div>
+					<div class="log-filters">
+						<label class="sr-only" for="activity-search">Search captured activity</label>
+						<input id="activity-search" type="search" placeholder="Search files, tools, output..." autocomplete="off">
+						<label class="sr-only" for="activity-filter">Activity type</label>
+						<select id="activity-filter">
+							<option value="all">All activity</option>
+							<option value="files">Files</option>
+							<option value="tool">Tools &amp; MCP</option>
+							<option value="command">Commands &amp; tests</option>
+							<option value="messages">Messages &amp; plans</option>
+							<option value="output">Output</option>
+							<option value="issues">Failures &amp; capture gaps</option>
+						</select>
+					</div>
+					<div class="log-caption"><span id="activity-count">0 activities</span><span>UTC</span></div>
+					<ol class="timeline" id="timeline" aria-label="Captured activity" tabindex="0">
+						<li class="empty-state">No captured activity.</li>
+					</ol>
+					<footer class="log-footer"><span id="capture-summary">No run selected</span><span class="trace-count" id="trace-count">0 spans stored</span></footer>
 				</section>
 			</aside>
 		</section>

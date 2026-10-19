@@ -1,4 +1,4 @@
-import { StoredTraceSpanSchema, TraceIdSchema, TraceSummarySchema, type TraceSummary } from 'model-worklog-schema';
+import { buildTraceLog, StoredTraceSpanSchema, TraceIdSchema, TraceSummarySchema, type TraceSummary } from 'model-worklog-schema';
 import type { TraceApi } from './traceApi';
 import { readTraceSpans, TRACE_EXPORT_PAGE_LIMIT } from './tracePages';
 import { buildSpanForest, traceWarnings } from './tracePresentation';
@@ -16,15 +16,20 @@ export async function exportTrace(api: TraceApi, projectId: string, traceId: str
 	const warnings = traceWarnings(forest, summary);
 	warnings.push('Pagination is not a point-in-time snapshot; concurrent writes may change retained spans.');
 	if (forest.nodes.length !== collected.items.length) { warnings.push('Duplicate span revisions were received during pagination; only the latest received revision is exported.'); }
+	const spans = forest.nodes.map(({ stored }) => StoredTraceSpanSchema.parse(publicStoredSpan(stored)));
+	const log = buildTraceLog(spans, { projectId, traceId });
 	return {
 		schemaVersion: 1, projectId, traceId, exportedAt: new Date().toISOString(),
 		metadata: {
+			activitySchemaVersion: 1,
 			captureScope: TRACE_CAPTURE_SCOPE, underlyingExecutionComplete: false,
 			allAvailablePagesCollected: true, pageCount: collected.pages, spanCount: forest.nodes.length,
 			captureModes: [...new Set(forest.nodes.map(({ stored }) => stored.span.capture.mode))],
 			missingParentSpanIds: forest.missingParents, cyclicSpanIds: forest.cycles, warnings,
 			privacy: 'Supervisor-retained trace data only, with additional credential-like text redaction. Review before sharing.',
 		},
-		spans: forest.nodes.map(({ stored }) => StoredTraceSpanSchema.parse(publicStoredSpan(stored))),
+		log,
+		activity: log.entries,
+		spans,
 	};
 }

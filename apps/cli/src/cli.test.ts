@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { buildSessionLog, type SessionEvent } from 'model-worklog-schema';
 
 import { runCli } from './cli';
 import { ExitCode } from './constants';
@@ -50,7 +51,7 @@ function validSession(overrides: Record<string, unknown> = {}): Record<string, u
 	};
 }
 
-function validEvent(sequence: number, kind: string, payload: Record<string, unknown>, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function validEvent(sequence: number, kind: SessionEvent['kind'], payload: SessionEvent['payload'], overrides: Partial<SessionEvent> = {}): SessionEvent {
 	return {
 		schemaVersion: 1,
 		eventId: `evt_${sequence}`,
@@ -102,7 +103,8 @@ test('--help returns Ok and prints to stdout', async () => {
 test('--version prints the version', async () => {
 	const result = await run(['--version']);
 	assert.equal(result.code, ExitCode.Ok);
-	assert.match(result.stdout, /0\.1\.0/);
+	const manifest = JSON.parse(await readFile(join(__dirname, '..', 'package.json'), 'utf8')) as { version: string };
+	assert.equal(result.stdout.trim(), manifest.version);
 });
 
 test('unknown command returns InvalidInvocation', async () => {
@@ -193,17 +195,19 @@ test('logs renders a readable timeline and one canonical event per JSONL line', 
 		if (path === '/v1/sessions/ses_demo') {
 			return new Response(JSON.stringify({ schemaVersion: 1, session: validSession({ title: 'Fix parser test output' }) }), { status: 200 });
 		}
+		if (path.endsWith('/log')) { return new Response(JSON.stringify(buildSessionLog(events, { state: 'completed' }))); }
 		return new Response(JSON.stringify({ schemaVersion: 1, sessionId: 'ses_demo', events }), { status: 200 });
 	};
 	const pretty = await run(['logs', 'ses_demo', '--format', 'pretty'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' }, true);
 	assert.equal(pretty.code, ExitCode.Ok);
 	assert.match(pretty.stdout, /Log: Fix parser test output/);
 	assert.match(pretty.stdout, /Session: ses_demo/);
-	assert.match(pretty.stdout, /agent\.summary/);
+	assert.match(pretty.stdout, /Assistant response/);
 	assert.match(pretty.stdout, /Read the requested file/);
-	assert.match(pretty.stdout, /Tokens: 20 total/);
-	assert.match(pretty.stdout, /provider-reported; providers openai; models gpt-5/);
-	assert.match(pretty.stdout, /reasoning 3/);
+	assert.match(pretty.stdout, /Tokens used: 20/);
+	assert.match(pretty.stdout, /Provider: openai/);
+	assert.match(pretty.stdout, /Model: gpt-5/);
+	assert.match(pretty.stdout, /Reasoning tokens: 3/);
 
 	const jsonl = await run(['logs', 'ses_demo', '--format', 'jsonl'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' });
 	assert.equal(jsonl.code, ExitCode.Ok);
@@ -232,6 +236,35 @@ test('watch sends resumable filters and renders one committed event per JSONL li
 	assert.equal(query?.get('path'), 'src/app');
 	assert.equal(query?.get('command'), 'npm test');
 	assert.deepEqual(JSON.parse(result.stdout) as { sequence: number; kind: string }, { ...validEvent(3, 'file.changed', { path: 'src/app.ts', operation: 'modified' }) });
+});
+
+test('pretty logs group 100 reads while JSON keeps all canonical records', async () => {
+	const events = Array.from({ length: 100 }, (_, index) => validEvent(index + 1, 'file.read', { path: `src/${index}.ts`, tool: 'read_file' }, { occurredAt: '2026-09-15T10:00:00.000Z' }));
+	const apiFetch: FetchLike = async (input) => new Response(JSON.stringify(new URL(input).pathname.endsWith('/log') ? buildSessionLog(events, { state: 'completed' }) : new URL(input).pathname.endsWith('/events')
+		? { schemaVersion: 1, sessionId: 'ses_demo', events }
+		: { schemaVersion: 1, session: validSession({ eventCount: 100 }) }));
+	const pretty = await run(['logs', 'ses_demo', '--format', 'pretty'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' });
+	assert.equal(pretty.code, ExitCode.Ok);
+	assert.equal(pretty.stdout.match(/Read 100 files/g)?.length, 1);
+	assert.match(pretty.stdout, /src\/99\.ts/);
+	const raw = await run(['logs', 'ses_demo', '--format', 'json'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' });
+	assert.equal(JSON.parse(raw.stdout).result.events.length, 100);
+});
+
+test('pretty watch groups reads across polling pages and flushes the group at a boundary', async () => {
+	let requests = 0;
+	const apiFetch: FetchLike = async () => {
+		requests += 1;
+		const events = requests === 1 ? [validEvent(1, 'file.read', { path: 'one.ts' })]
+			: [validEvent(1, 'file.read', { path: 'one.ts' }), validEvent(2, 'file.read', { path: 'two.ts' }), validEvent(3, 'session.completed', {})];
+		return new Response(JSON.stringify(buildSessionLog(events, { state: requests === 1 ? 'running' : 'completed' })));
+	};
+	const result = await run(['watch', 'ses_demo', '--format', 'pretty', '--interval-ms', '0'], apiFetch, { MODEL_WORKLOG_TOKEN: 'test-token' });
+	assert.equal(result.code, ExitCode.Ok);
+	assert.equal(result.stdout.match(/Read 2 files/g)?.length, 1);
+	assert.equal(result.stdout.includes('Read 1 file'), false);
+	assert.match(result.stdout, /one\.ts/);
+	assert.match(result.stdout, /two\.ts/);
 });
 
 test('cost renders a versioned provider cost report from the supervisor', async () => {

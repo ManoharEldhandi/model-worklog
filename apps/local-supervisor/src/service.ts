@@ -4,6 +4,7 @@ import { realpath } from 'node:fs/promises';
 
 import { CopilotCliHookAdapter, CopilotCliInteractiveAdapter, type AdapterEventSink } from 'model-worklog-sdk';
 import {
+	buildSessionLog,
 	isEventKind,
 	isEvidenceGrade,
 	isJsonValue,
@@ -92,6 +93,7 @@ interface CopilotSessionBody {
 	readonly task: string;
 	readonly model?: string;
 	readonly maxDurationMs: number;
+	readonly captureReasoning?: boolean;
 }
 
 interface CopilotInteractiveSessionBody {
@@ -451,7 +453,7 @@ export class SupervisorService {
 				return this.verifyEvidenceBundle(request.body);
 			}
 
-			const match = /^\/v1\/sessions\/([^/]+)(?:\/(events|usage|complete|cancel|cost|evidence-bundle))?$/.exec(request.pathname);
+			const match = /^\/v1\/sessions\/([^/]+)(?:\/(events|log|usage|complete|cancel|cost|evidence-bundle))?$/.exec(request.pathname);
 			if (match === null || match[1] === undefined) {
 				return errorBody('not_found', `unknown path ${request.pathname}`);
 			}
@@ -465,6 +467,9 @@ export class SupervisorService {
 			}
 			if (operation === 'events') {
 				return request.method === 'GET' ? this.getEvents(sessionId, request.query) : request.method === 'POST' ? this.appendIntegrationEvent(sessionId, request.body) : errorBody('method_not_allowed', 'events supports GET and POST');
+			}
+			if (operation === 'log' && request.method === 'GET') {
+				return this.getLog(sessionId);
 			}
 			if (operation === 'usage' && request.method === 'POST') {
 				return this.recordUsage(sessionId, request.body);
@@ -836,6 +841,13 @@ export class SupervisorService {
 			return errorBody('not_found', `unknown session ${sessionId}`);
 		}
 		return ok({ sessionId, cost: calculateCostReport(await this.ledger.listEvents(sessionId)) });
+	}
+
+	private async getLog(sessionId: string): Promise<ApiResult> {
+		const events = await this.ledger.listEvents(sessionId);
+		const session = await this.ledger.getSession(sessionId);
+		if (session === undefined) { return errorBody('not_found', `unknown session ${sessionId}`); }
+		return ok(buildSessionLog(events, { sessionId, state: session.state }));
 	}
 
 	private async getEvidenceBundle(sessionId: string): Promise<ApiResult> {
@@ -1220,7 +1232,8 @@ export class SupervisorService {
 			throw new Error('Copilot session requires workspacePath, a task up to 32000 characters, and an optional model');
 		}
 		const maxDurationMs = optionalBoundedInteger(value, 'maxDurationMs', DEFAULT_CODEX_DURATION_MS, 1_000, MAX_CODEX_DURATION_MS);
-		return { workspacePath, task, ...(model === undefined ? {} : { model }), maxDurationMs };
+		if (value.captureReasoning !== undefined && typeof value.captureReasoning !== 'boolean') { throw new Error('captureReasoning must be a boolean'); }
+		return { workspacePath, task, ...(model === undefined ? {} : { model }), maxDurationMs, ...(value.captureReasoning === undefined ? {} : { captureReasoning: value.captureReasoning }) };
 	}
 
 	private parseCopilotInteractiveSessionBody(body: unknown): CopilotInteractiveSessionBody {

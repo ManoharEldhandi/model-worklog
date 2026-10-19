@@ -1,10 +1,14 @@
-import type { JsonObject, JsonValue, SessionEvent, TokenUsageSummary } from 'model-worklog-schema';
+import { buildSessionLog, formatActivityText, type ActivityEntry, type ActivityStatus, type ActivityLog, type SessionEvent } from 'model-worklog-schema';
 
 import type { SupervisorSession } from './supervisorApi';
 
 export interface LogDetailEntry {
+	readonly id?: string;
 	readonly label: string;
 	readonly content?: string;
+	readonly timestamp?: string;
+	readonly endedAt?: string;
+	readonly status?: ActivityStatus;
 }
 
 export interface LogDetailSection {
@@ -17,45 +21,12 @@ export interface LogDetailModel {
 	readonly title: string;
 	readonly status: 'live' | 'completed' | 'failed' | 'stopped';
 	readonly updateCount: number;
+	readonly activity: readonly ActivityEntry[];
+	readonly log: ActivityLog;
 	readonly sections: readonly LogDetailSection[];
 }
 
-interface TokenTotals {
-	readonly source?: string;
-	readonly providers: readonly string[];
-	readonly models: readonly string[];
-	readonly inputTokens: number;
-	readonly outputTokens: number;
-	readonly cacheReadTokens: number;
-	readonly cacheWriteTokens: number;
-	readonly reasoningTokens: number;
-	readonly totalTokens: number;
-}
-
 const MAX_SECTION_ENTRIES = 100;
-const MAX_TEXT_CHARS = 16_000;
-
-function text(value: unknown): string | undefined {
-	return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
-
-function number(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function object(value: unknown): JsonObject | undefined {
-	return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as JsonObject : undefined;
-}
-
-function formatValue(value: JsonValue | undefined): string | undefined {
-	if (value === undefined) {
-		return undefined;
-	}
-	const formatted = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-	return formatted.length <= MAX_TEXT_CHARS
-		? formatted
-		: `${formatted.slice(0, MAX_TEXT_CHARS)}\n\nShowing the first ${MAX_TEXT_CHARS.toLocaleString()} characters. Download JSON for the complete log.`;
-}
 
 function status(session: SupervisorSession): LogDetailModel['status'] {
 	switch (session.state) {
@@ -103,230 +74,26 @@ function section(titleValue: string, entries: readonly LogDetailEntry[]): LogDet
 	};
 }
 
-function eventTime(event: SessionEvent): string {
-	return event.occurredAt.slice(11, 19);
-}
-
-function command(payload: JsonObject): string {
-	const executable = text(payload.executable) ?? text(payload.command) ?? 'command';
-	const args = Array.isArray(payload.args) ? payload.args.filter((value): value is string => typeof value === 'string') : [];
-	return [executable, ...args].join(' ');
-}
-
-function detail(label: string, value: JsonValue | undefined): LogDetailEntry | undefined {
-	const content = formatValue(value);
-	return content === undefined ? undefined : { label, content };
-}
-
-function eventDetail(label: string, values: readonly (LogDetailEntry | undefined)[]): LogDetailEntry {
-	return {
-		label,
-		content: values.filter((value): value is LogDetailEntry => value !== undefined).map((value) => `${value.label}:\n${value.content ?? ''}`).join('\n\n') || undefined,
-	};
-}
-
-function reportedTokenTotals(events: readonly SessionEvent[]): TokenTotals | undefined {
-	const reports = events.filter((event) => event.kind === 'usage.reported');
-	if (reports.length === 0) {
-		return undefined;
-	}
-	const providers = new Set<string>();
-	const models = new Set<string>();
-	let source: string | undefined;
-	let inputTokens = 0;
-	let outputTokens = 0;
-	let cacheReadTokens = 0;
-	let cacheWriteTokens = 0;
-	let reasoningTokens = 0;
-	let totalTokens = 0;
-	for (const report of reports) {
-		const payload = report.payload;
-		const provider = text(payload.provider);
-		const model = text(payload.model);
-		providers.add(provider ?? 'Provider not named');
-		if (model !== undefined) {
-			models.add(model);
-		}
-		source ??= text(payload.source);
-		inputTokens += number(payload.inputTokens) ?? 0;
-		outputTokens += number(payload.outputTokens) ?? 0;
-		cacheReadTokens += number(payload.cacheReadTokens) ?? 0;
-		cacheWriteTokens += number(payload.cacheWriteTokens) ?? 0;
-		reasoningTokens += number(payload.reasoningTokens) ?? 0;
-		totalTokens += number(payload.totalTokens) ?? 0;
-	}
-	return { source, providers: [...providers], models: [...models], inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, totalTokens };
-}
-
-function sessionTokenTotals(summary: TokenUsageSummary): TokenTotals | undefined {
-	if (summary.status !== 'reported') {
-		return undefined;
-	}
-	return {
-		source: summary.source,
-		providers: summary.providers,
-		models: summary.models,
-		inputTokens: summary.inputTokens,
-		outputTokens: summary.outputTokens,
-		cacheReadTokens: summary.cacheReadTokens,
-		cacheWriteTokens: summary.cacheWriteTokens,
-		totalTokens: summary.totalTokens,
-		reasoningTokens: summary.reasoningTokens,
-	};
-}
-
-function tokenSection(session: SupervisorSession, events: readonly SessionEvent[]): LogDetailSection | undefined {
-	const totals = reportedTokenTotals(events) ?? sessionTokenTotals(session.tokenUsage);
-	if (totals === undefined) {
-		const automaticCopilotHook = session.actor === 'copilot-cli-hook';
-		return {
-			title: 'Tokens Used',
-			entries: [{
-				label: automaticCopilotHook ? 'Unavailable from Copilot CLI hook' : 'Not reported',
-				content: automaticCopilotHook
-					? 'Copilot CLI does not provide token usage to automatic hooks. Use Log a Copilot CLI Task to record provider-reported usage.'
-					: 'The connected AI integration did not provide token usage for this session.',
-			}],
-		};
-	}
-	return {
-		title: 'Tokens Used',
-		entries: [
-			{ label: `Total: ${totals.totalTokens.toLocaleString()}` },
-			{ label: `Input: ${totals.inputTokens.toLocaleString()}` },
-			{ label: `Output: ${totals.outputTokens.toLocaleString()}` },
-			{ label: `Reasoning: ${totals.reasoningTokens.toLocaleString()}` },
-			{ label: `Cache read: ${totals.cacheReadTokens.toLocaleString()}` },
-			{ label: `Cache write: ${totals.cacheWriteTokens.toLocaleString()}` },
-			...(totals.providers.length === 0 ? [] : [{ label: `Provider: ${totals.providers.join(', ')}` }]),
-			...(totals.models.length === 0 ? [] : [{ label: `Model: ${totals.models.join(', ')}` }]),
-			...(totals.source === undefined ? [] : [{ label: `Reported as: ${totals.source}` }]),
-		],
-	};
-}
-
 /** Builds one readable, sectioned view of a selected session's saved activity. */
 export function buildLogDetail(session: SupervisorSession, events: readonly SessionEvent[]): LogDetailModel {
-	const userRequests: LogDetailEntry[] = [];
-	const plans: LogDetailEntry[] = [];
-	const reasoning: LogDetailEntry[] = [];
-	const agentResponses: LogDetailEntry[] = [];
-	const tools: LogDetailEntry[] = [];
-	const files: LogDetailEntry[] = [];
-	const commands: LogDetailEntry[] = [];
-	const output: LogDetailEntry[] = [];
-	const tests: LogDetailEntry[] = [];
-	const notes: LogDetailEntry[] = [];
+	return buildLogDetailFromLog({ ...session, title: session.title ?? titleFromEvents(events) }, buildSessionLog(events, {
+		sessionId: session.sessionId, ...(session.state === 'running' || session.state === 'completed' || session.state === 'failed' || session.state === 'interrupted' ? { state: session.state } : {}),
+	}));
+}
 
-	for (const event of events) {
-		const payload = event.payload;
-		const time = eventTime(event);
-		if (event.kind === 'agent.message') {
-			const message = text(payload.text);
-			if (message !== undefined) {
-				(event.payload.role === 'user' ? userRequests : agentResponses).push({ label: time, content: message });
-			}
-			continue;
-		}
-		if (event.kind === 'agent.summary') {
-			const summary = text(payload.summary) ?? text(payload.message);
-			const source = text(payload.source);
-			if (source === 'plan') {
-				plans.push(eventDetail(time, [detail('Plan', summary), detail('Steps', payload.plan)]));
-			} else if (source === 'reasoning-summary') {
-				if (summary !== undefined) {
-					reasoning.push({ label: time, content: summary });
-				}
-			} else if (summary !== undefined) {
-				agentResponses.push({ label: time, content: summary });
-			}
-			continue;
-		}
-		if (event.kind === 'tool.called') {
-			const tool = text(payload.tool) ?? 'Unnamed tool';
-			tools.push(eventDetail(`${time}  ${tool} selected`, [detail('Target file', object(payload.arguments)?.path ?? object(payload.arguments)?.file_path), detail('Arguments', payload.arguments)]));
-			continue;
-		}
-		if (event.kind === 'tool.completed') {
-			const tool = text(payload.tool) ?? 'Unnamed tool';
-			tools.push(eventDetail(`${time}  ${tool} ${payload.success === true ? 'completed' : 'failed'}`, [detail('Result', payload.result), detail('Error', text(payload.error))]));
-			continue;
-		}
-		if (event.kind === 'file.read') {
-			const pathType = text(payload.pathType);
-			const target = text(payload.path) ?? 'a path';
-			const action = pathType === 'directory' ? 'Inspected directory' : pathType === 'file' ? 'Read file' : 'Read path';
-			files.push({ label: `${time}  ${action}: ${target}`, content: text(payload.tool) === undefined ? undefined : `Using ${text(payload.tool)}` });
-			continue;
-		}
-		if (event.kind === 'file.changed') {
-			files.push({ label: `${time}  ${text(payload.operation) ?? 'Changed'} ${text(payload.path) ?? 'a file'}` });
-			continue;
-		}
-		if (event.kind === 'command.started' || event.kind === 'process.started') {
-			commands.push({ label: `${time}  Started ${command(payload)}` });
-			continue;
-		}
-		if (event.kind === 'command.completed' || event.kind === 'process.completed' || event.kind === 'process.failed') {
-			const statusValue = event.kind === 'process.failed' ? 'failed to start' : payload.exitCode === 0 || payload.succeeded === true ? 'passed' : 'finished';
-			commands.push(eventDetail(`${time}  ${statusValue}: ${command(payload)}`, [detail('Exit code', payload.exitCode), detail('Signal', text(payload.signal)), detail('Details', text(payload.message))]));
-			continue;
-		}
-		if (event.kind === 'process.output') {
-			output.push({ label: `${time}  ${text(payload.stream) ?? 'Output'}`, content: text(payload.text) });
-			continue;
-		}
-		if (event.kind === 'test.completed') {
-			tests.push(eventDetail(`${time}  ${payload.success === true ? 'Passed' : 'Failed'}: ${text(payload.name) ?? 'Unnamed test'}`, [detail('Duration', typeof payload.durationMs === 'number' ? `${payload.durationMs} ms` : undefined)]));
-			continue;
-		}
-		if (event.kind === 'instruction.loaded') {
-			notes.push(eventDetail(`${time}  Loaded instructions: ${text(payload.path) ?? 'source not named'}`, [detail('From', text(payload.adapter)), detail('Reason', text(payload.loadReason))]));
-			continue;
-		}
-		if (event.kind === 'adapter.lifecycle') {
-			notes.push(eventDetail(`${time}  ${text(payload.adapter) ?? 'AI connection'}: ${text(payload.phase) ?? 'status update'}`, [detail('Details', text(payload.message)), detail('Model', text(payload.model)), detail('Reason', text(payload.reason))]));
-			continue;
-		}
-		if (event.kind === 'workspace.diff') {
-			const current = object(payload.current);
-			notes.push(eventDetail(`${time}  ${payload.changedSinceStart === true ? 'Workspace changes found' : 'Workspace changes checked'}`, [detail('Changed files', current?.paths), detail('Details', payload.available === false ? 'A workspace change snapshot was not available.' : undefined)]));
-			continue;
-		}
-		if (event.kind === 'usage.unavailable') {
-			notes.push(eventDetail(`${time}  Token count not reported`, [detail('Details', text(payload.message))]));
-			continue;
-		}
-		if (event.kind === 'usage.reported') {
-			continue;
-		}
-		if (event.kind === 'log.truncated') {
-			notes.push(eventDetail(`${time}  Output shortened`, [detail('Stream', text(payload.stream)), detail('Omitted characters', payload.omittedCharacters)]));
-			continue;
-		}
-		if (event.kind === 'session.started' || event.kind === 'session.completed' || event.kind === 'session.interrupted' || event.kind === 'session.failed') {
-			continue;
-		}
-		notes.push(eventDetail(`${time}  ${event.kind}`, [detail('Details', payload)]));
-	}
-
+export function buildLogDetailFromLog(session: SupervisorSession, log: ActivityLog): LogDetailModel {
+	if (session.sessionId !== log.sessionId) { throw new Error('Log does not match the selected session.'); }
+	const activity = log.entries;
 	return {
 		sessionId: session.sessionId,
-		title: session.title ?? titleFromEvents(events) ?? title(session),
-		status: status(session),
-		updateCount: session.eventCount,
+		title: session.title ?? title(session),
+		status: status({ ...session, state: log.state }),
+		updateCount: log.sourceCount,
+		activity, log,
 		sections: [
-			section('User Request', userRequests),
-			section('Agent Plan', plans),
-			section('Reasoning Summary', reasoning),
-			section('Tools Used', tools),
-			section('Files', files),
-			section('Commands', commands),
-			section('Output', output),
-			section('Tests', tests),
-			section('Agent Response', agentResponses),
-			section('Session Notes', notes),
-			tokenSection(session, events),
+			section('Activity', activity.map((entry) => ({ id: entry.id, label: entry.title,
+				timestamp: entry.startedAt, endedAt: entry.endedAt, status: entry.status,
+				content: formatActivityText(entry).slice(1).join('\n') || undefined }))),
 		].filter((value): value is LogDetailSection => value !== undefined),
 	};
 }

@@ -1,9 +1,10 @@
 # Releasing
 
-Prepare **0.2.0** as the SDK-first tracing release. The implementation in this
-checkout is not proof of publication: new tracing APIs remain unpublished until
-an authorized operator publishes the npm packages and VSIX. Older registry
-versions may lack them. This guide does not authorize a publish operation.
+Prepare **2.1.0** as the semantic logging release. GitHub source/VSIX releases,
+npm publication and Marketplace publication are separate operations. Only claim
+registry availability after the corresponding authorized publication succeeds.
+Older registry versions may lack these APIs. This guide alone does not authorize
+a publish operation.
 
 All shell blocks use the **repository root**, never an extension-directory shell.
 Run validation and packaging serially in an isolated release checkout, away from
@@ -11,7 +12,7 @@ active browser/editor validation. Authentication and publication are operator-on
 
 ## Prepare And Qualify
 
-1. Coordinate the 0.2.0 bump across the root, schema, SDK, supervisor, CLI, and
+1. Coordinate the 2.1.0 bump across the root, schema, SDK, supervisor, CLI, and
    extension manifests, internal dependency ranges, and lockfiles. Do not leave
    `^0.1.x` dependencies pointing new tracing packages at legacy APIs.
 2. Align Node requirements across the JavaScript project to **>=22.13.0**. The
@@ -23,8 +24,9 @@ active browser/editor validation. Authentication and publication are operator-on
    validation. Windows ACL parity and other untested platform behavior remain
    unqualified; passing CI is not compliance certification or a benchmark.
 
-The [version check](../scripts/check-release-versions.mjs) checks version equality,
-not dependency ranges or Node engine consistency. Review those separately.
+The [version check](../scripts/check-release-versions.mjs) checks manifest equality,
+internal dependency ranges and supervisor/CLI runtime versions. Review lockfiles
+and Node engine consistency separately.
 The [CI workflow](../.github/workflows/ci.yml) must enforce the exact-minimum gates;
 a floating Node 22 job or split checks alone do not establish release readiness.
 This documentation does not declare those gates complete.
@@ -49,17 +51,17 @@ Resolve failures before packaging for publication; do not downgrade the gates.
 
 After the bump and gates pass, use an empty versioned staging directory. `npm pack`
 runs build hooks, so do not run these commands concurrently. The VSIX copied here
-must be the 0.2.0 artifact produced by the validated release check.
+must be the 2.1.0 artifact produced by the validated release check.
 
 ```sh
 cd "$(git rev-parse --show-toplevel)"
-release_dir="$PWD/artifacts/0.2.0"
+release_dir="$PWD/artifacts/2.1.0"
 mkdir -p "$release_dir"
 npm pack --workspace model-worklog-schema --pack-destination "$release_dir"
 npm pack --workspace model-worklog-sdk --pack-destination "$release_dir"
 npm pack --workspace model-worklog-supervisor --pack-destination "$release_dir"
 npm pack --workspace model-worklog --pack-destination "$release_dir"
-cp apps/vscode-extension/model-worklog-0.2.0.vsix "$release_dir/"
+cp apps/vscode-extension/model-worklog-2.1.0.vsix "$release_dir/"
 ```
 
 Inspect all archive manifests, entry points, runtime dependencies, licenses, and
@@ -77,14 +79,14 @@ available before publishing its dependent; do not continue with stale versions.
 
 ```sh
 cd "$(git rev-parse --show-toplevel)"
-release_dir="$PWD/artifacts/0.2.0"
-npm publish "$release_dir/model-worklog-schema-0.2.0.tgz" --access public &&
-npm view model-worklog-schema@0.2.0 version &&
-npm publish "$release_dir/model-worklog-sdk-0.2.0.tgz" --access public &&
-npm view model-worklog-sdk@0.2.0 version &&
-npm publish "$release_dir/model-worklog-supervisor-0.2.0.tgz" --access public &&
-npm view model-worklog-supervisor@0.2.0 version &&
-npm publish "$release_dir/model-worklog-0.2.0.tgz" --access public
+release_dir="$PWD/artifacts/2.1.0"
+npm publish "$release_dir/model-worklog-schema-2.1.0.tgz" --access public &&
+npm view model-worklog-schema@2.1.0 version &&
+npm publish "$release_dir/model-worklog-sdk-2.1.0.tgz" --access public &&
+npm view model-worklog-sdk@2.1.0 version &&
+npm publish "$release_dir/model-worklog-supervisor-2.1.0.tgz" --access public &&
+npm view model-worklog-supervisor@2.1.0 version &&
+npm publish "$release_dir/model-worklog-2.1.0.tgz" --access public
 ```
 
 ## Publish The VSIX
@@ -97,28 +99,28 @@ VSIX without rebuilding it. Do not add a version argument or use a wildcard.
 
 ```sh
 cd "$(git rev-parse --show-toplevel)"
-release_dir="$PWD/artifacts/0.2.0"
+release_dir="$PWD/artifacts/2.1.0"
 : "${VSCE_PAT:?Provide VSCE_PAT through your secret manager}" &&
 ./apps/vscode-extension/node_modules/.bin/vsce publish \
-  --packagePath "$release_dir/model-worklog-0.2.0.vsix"
+   --packagePath "$release_dir/model-worklog-2.1.0.vsix"
 ```
 
 ## GitHub Release
 
-Require an approved `v0.2.0` tag on the reviewed commit and operator GitHub release
+Require an approved `v2.1.0` tag on the reviewed commit and operator GitHub release
 authorization. Run from the root; do not first `cd apps/vscode-extension` and then
 use root-relative paths. Attach the same tarballs and VSIX that were published.
 
 ```sh
 cd "$(git rev-parse --show-toplevel)"
-release_dir="$PWD/artifacts/0.2.0"
-gh release create v0.2.0 \
-  "$release_dir/model-worklog-schema-0.2.0.tgz" \
-  "$release_dir/model-worklog-sdk-0.2.0.tgz" \
-  "$release_dir/model-worklog-supervisor-0.2.0.tgz" \
-  "$release_dir/model-worklog-0.2.0.tgz" \
-  "$release_dir/model-worklog-0.2.0.vsix" \
-  --verify-tag --title "0.2.0" --generate-notes
+release_dir="$PWD/artifacts/2.1.0"
+gh release create v2.1.0 \
+   "$release_dir/model-worklog-schema-2.1.0.tgz" \
+   "$release_dir/model-worklog-sdk-2.1.0.tgz" \
+   "$release_dir/model-worklog-supervisor-2.1.0.tgz" \
+   "$release_dir/model-worklog-2.1.0.tgz" \
+   "$release_dir/model-worklog-2.1.0.vsix" \
+   --verify-tag --title "2.1.0" --generate-notes
 ```
 
 Verify registry versions, dependency resolution, fresh SDK/collector installation,

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import type { SessionEvent, TokenUsageSummary } from 'model-worklog-schema';
+import { ActivityLogSchema, type ActivityLog, type SessionEvent, type TokenUsageSummary } from 'model-worklog-schema';
 
 export interface SupervisorSession {
 	readonly sessionId: string;
@@ -38,6 +38,7 @@ export interface CodexSessionOptions {
 export interface CopilotSessionOptions {
 	readonly model?: string;
 	readonly maxDurationMs: number;
+	readonly captureReasoning?: boolean;
 }
 
 interface ApiErrorBody {
@@ -159,6 +160,12 @@ export async function deleteSession(baseUrl: URL, sessionId: string): Promise<vo
 
 export async function getSessionEvents(baseUrl: URL, sessionId: string): Promise<readonly SessionEvent[]> {
 	return (await getSessionEventSnapshot(baseUrl, sessionId)).events;
+}
+
+export async function getSessionLog(baseUrl: URL, sessionId: string): Promise<ActivityLog> {
+	const log = ActivityLogSchema.parse(await request<unknown>(baseUrl, `/v1/sessions/${encodeURIComponent(sessionId)}/log`));
+	if (log.sessionId !== sessionId) { throw new Error('Supervisor returned a mismatched activity log.'); }
+	return log;
 }
 
 export function evidenceBundlePath(sessionId: string): string {

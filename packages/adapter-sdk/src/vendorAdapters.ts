@@ -14,6 +14,7 @@ export interface AdapterEventSink {
 
 export interface VendorAdapterOptions {
 	readonly workspacePath?: string;
+	readonly captureReasoning?: boolean;
 }
 
 export interface AdapterIngestResult {
@@ -419,7 +420,7 @@ export class CodexAppServerAdapter {
 			if (itemType === 'agentMessage' && method === 'item/completed') {
 				const text = optionalString(item.text);
 				if (text !== undefined) {
-					await record('agent.summary', { summary: text }, itemCorrelation);
+					await record('agent.summary', { summary: text, final: true }, itemCorrelation);
 					return { emitted, completed: false };
 				}
 			}
@@ -453,6 +454,7 @@ export class CodexAppServerAdapter {
 interface CopilotToolState {
 	readonly tool: string;
 	readonly argumentsValue: JsonObject;
+	readonly server?: string;
 }
 
 function toolResult(value: unknown): JsonValue | undefined {
@@ -478,11 +480,16 @@ function copilotFileOperation(tool: string): 'created' | 'modified' | 'deleted' 
 
 /**
  * Maps the documented Copilot CLI JSONL stream. It retains only visible messages
- * and tool activity; raw reasoning records are represented as unavailable.
+ * and tool activity. Readable provider-exposed reasoning is opt-in; opaque
+ * and encrypted fields are never retained or decoded.
  */
 export class CopilotCliAdapter {
 	private readonly tools = new Map<string, CopilotToolState>();
 	private readonly suppressedReasoningTurns = new Set<string>();
+	private readonly reasoningInTurn = new Set<string>();
+	private readonly turns = new Map<string, string>();
+	private readonly outputSequences = new Map<string, number>();
+	private readonly unmappedTypes = new Set<string>();
 
 	constructor(
 		private readonly session: AdapterEventSink,
@@ -497,8 +504,15 @@ export class CopilotCliAdapter {
 			await this.session.unknown('adapter.lifecycle', 'adapter-error', { adapter: 'copilot-cli', message: 'Copilot CLI event must contain a type.' });
 			return { emitted: 1, completed: false };
 		}
+		const agentId = optionalString(event.agentId);
+		const agentKey = agentId ?? 'main';
+		if (type === 'assistant.turn_start' && optionalString(data?.turnId) !== undefined) { this.turns.set(agentKey, data?.turnId as string); }
+		const turn = optionalString(data?.turnId) ?? this.turns.get(agentKey) ?? 'unidentified';
+		const turnKey = JSON.stringify([agentKey, turn]);
 		const correlationId = eventCorrelation(data ?? {}) ?? optionalString(event.id);
-		const record = (kind: EventKind, payload: JsonObject, correlation = correlationId): Promise<unknown> => this.session.emitEvent(kind, payload, correlation);
+		const record = (kind: EventKind, payload: JsonObject, correlation = correlationId): Promise<unknown> => this.session.emitEvent(kind, {
+			...payload, ...(agentId === undefined ? {} : { agentId }),
+		}, correlation);
 
 		switch (type) {
 			case 'user.message': {
@@ -510,20 +524,40 @@ export class CopilotCliAdapter {
 				await record('agent.message', { role: 'user', text: message, source: 'copilot-cli' });
 				return { emitted: 1, completed: false };
 			}
+			case 'assistant.message_delta':
 			case 'assistant.message': {
-				const message = optionalString(data?.content);
+				const delta = type === 'assistant.message_delta';
+				const message = typeof (delta ? data?.deltaContent : data?.content) === 'string' ? (delta ? data?.deltaContent : data?.content) as string : undefined;
 				if (message === undefined) {
 					return { emitted: 0, completed: false };
 				}
-				await record('agent.message', { role: 'assistant', text: message, source: 'copilot-cli' });
-				return { emitted: 1, completed: false };
+				let emitted = 1;
+				if (!delta && this.options.captureReasoning && !this.reasoningInTurn.has(turnKey) && optionalString(data?.reasoningText) !== undefined) {
+					await record('agent.summary', { source: 'reasoning-summary', summary: data?.reasoningText as string, final: true, origin: 'provider-exposed' }, `reasoning:${optionalString(data?.messageId) ?? turn}`);
+					this.reasoningInTurn.add(turnKey);
+					emitted += 1;
+				}
+				await record('agent.message', { role: 'assistant', text: message, source: 'copilot-cli',
+					...(delta ? { delta: true } : optionalString(data?.messageId) === undefined ? {} : { final: true }),
+					...(optionalString(data?.phase) === undefined ? {} : { phase: data?.phase as string }),
+					...(Array.isArray(data?.toolRequests) && data.toolRequests.length > 0 ? { messageKind: 'commentary' } : {}),
+				}, optionalString(data?.messageId) ?? correlationId);
+				return { emitted, completed: false };
 			}
+			case 'assistant.reasoning_delta':
 			case 'assistant.reasoning': {
-				const turn = optionalString(data?.turnId) ?? correlationId ?? 'unidentified';
-				if (this.suppressedReasoningTurns.has(turn)) {
+				const delta = type === 'assistant.reasoning_delta';
+				const content = typeof (delta ? data?.deltaContent : data?.content) === 'string' ? (delta ? data?.deltaContent : data?.content) as string : undefined;
+				if (this.options.captureReasoning && content !== undefined) {
+					this.reasoningInTurn.add(turnKey);
+					await record('agent.summary', { source: 'reasoning-summary', summary: content, origin: 'provider-exposed', ...(delta ? { delta: true } : { final: true }) },
+					`reasoning:${optionalString(data?.reasoningId) ?? turn}`);
+					return { emitted: 1, completed: false };
+				}
+				if (this.suppressedReasoningTurns.has(turnKey)) {
 					return { emitted: 0, completed: false };
 				}
-				this.suppressedReasoningTurns.add(turn);
+				this.suppressedReasoningTurns.add(turnKey);
 				await this.session.unknown('agent.summary', 'redacted', {
 					adapter: 'copilot-cli', type,
 					message: 'Raw model reasoning is not retained. Copilot did not provide a separate visible reasoning summary for this turn.',
@@ -538,9 +572,15 @@ export class CopilotCliAdapter {
 					return { emitted: 1, completed: false };
 				}
 				const argumentsValue = objectValue(data?.arguments);
-				this.tools.set(toolCallId, { tool, argumentsValue });
-				await record('tool.called', { tool, arguments: argumentsValue }, toolCallId);
+				const server = optionalString(data?.mcpServerName);
+				this.tools.set(JSON.stringify([agentKey, toolCallId]), { tool, argumentsValue, server });
 				const path = isReadTool(tool) ? readPath(argumentsValue, this.options.workspacePath) : undefined;
+				const displayArguments = path === undefined ? argumentsValue : { ...argumentsValue,
+					...(typeof argumentsValue.path === 'string' ? { path } : {}), ...(typeof argumentsValue.file_path === 'string' ? { file_path: path } : {}) };
+				await record('tool.called', { tool, arguments: displayArguments,
+					...(server === undefined ? {} : { server, method: 'tools/call' }),
+					...(optionalString(data?.mcpToolName) === undefined ? {} : { originalTool: data?.mcpToolName as string }),
+				}, toolCallId);
 				if (path !== undefined) {
 					const pathType = await readPathType(argumentsValue, this.options.workspacePath);
 					await record('file.read', { path, tool, ...(pathType === undefined ? {} : { pathType }) }, toolCallId);
@@ -550,18 +590,20 @@ export class CopilotCliAdapter {
 			}
 			case 'tool.execution_complete': {
 				const toolCallId = optionalString(data?.toolCallId) ?? correlationId;
-				const toolState = toolCallId === undefined ? undefined : this.tools.get(toolCallId);
+				const key = JSON.stringify([agentKey, toolCallId]);
+				const toolState = toolCallId === undefined ? undefined : this.tools.get(key);
 				const tool = toolState?.tool ?? optionalString(data?.toolName);
 				if (tool === undefined || toolCallId === undefined) {
 					await this.session.unknown('tool.completed', 'not-observed', { adapter: 'copilot-cli', type, message: 'Tool completion could not be associated with a tool call.' });
 					return { emitted: 1, completed: false };
 				}
-				this.tools.delete(toolCallId);
+				this.tools.delete(key);
 				await record('tool.completed', {
 					tool,
-					success: data?.success === true,
-					...(data?.success === true && toolResult(data.result) !== undefined ? { result: toolResult(data.result) as JsonValue } : {}),
-					...(data?.success === true ? {} : { error: optionalString(asRecord(data?.result)?.message) ?? 'Copilot tool execution failed.' }),
+					...(typeof data?.success === 'boolean' ? { success: data.success } : {}),
+					...(toolResult(data?.result) === undefined ? {} : { result: toolResult(data?.result) as JsonValue }),
+					...(toolState?.server === undefined ? {} : { server: toolState.server, method: 'tools/call' }),
+					...(data?.success === false ? { error: optionalString(asRecord(data?.error)?.message) ?? optionalString(asRecord(data?.result)?.message) ?? 'Copilot tool execution failed.' } : {}),
 				}, toolCallId);
 				const path = toolState === undefined ? undefined : readPath(toolState.argumentsValue, this.options.workspacePath);
 				const operation = copilotFileOperation(tool);
@@ -571,6 +613,28 @@ export class CopilotCliAdapter {
 				}
 				return { emitted: 1, completed: false };
 			}
+			case 'tool.shell_output': {
+				const toolCallId = optionalString(data?.toolCallId);
+				const text = typeof data?.text === 'string' ? data.text : undefined;
+				const sequence = data?.sequence;
+				if (toolCallId === undefined || text === undefined || typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence < 0) { return { emitted: 0, completed: false }; }
+				const key = JSON.stringify([agentKey, toolCallId]);
+				if ((this.outputSequences.get(key) ?? -1) >= sequence) { return { emitted: 0, completed: false }; }
+				const previous = this.outputSequences.get(key) ?? -1;
+				this.outputSequences.set(key, sequence);
+				await record('process.output', { stream: optionalString(data?.stream) ?? 'stdout', text, delta: true, sequence,
+					...(sequence > previous + 1 ? { missingChunks: sequence - previous - 1 } : {}) }, toolCallId);
+				return { emitted: 1, completed: false };
+			}
+			case 'assistant.intent': {
+				const intent = optionalString(data?.intent);
+				if (intent === undefined) { return { emitted: 0, completed: false }; }
+				await record('agent.summary', { source: 'plan', summary: intent, intent: true });
+				return { emitted: 1, completed: false };
+			}
+			case 'session.error':
+				await record('adapter.lifecycle', { adapter: 'copilot-cli', phase: 'failed', userFacing: true, message: optionalString(data?.message) ?? 'Copilot session failed.' });
+				return { emitted: 1, completed: false };
 			case 'assistant.turn_start':
 			case 'assistant.turn_end':
 			case 'model.call_start':
@@ -588,7 +652,10 @@ export class CopilotCliAdapter {
 				});
 				return { emitted: 1, completed: false };
 			default:
-				return { emitted: 0, completed: false };
+				if (this.unmappedTypes.has(type)) { return { emitted: 0, completed: false }; }
+				this.unmappedTypes.add(type);
+				await this.session.unknown('adapter.lifecycle', 'unsupported-capability', { adapter: 'copilot-cli', type, message: 'Provider event retained as a diagnostic; this adapter does not decode its payload.' });
+				return { emitted: 1, completed: false };
 		}
 	}
 }

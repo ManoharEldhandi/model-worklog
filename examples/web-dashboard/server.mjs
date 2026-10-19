@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createLocalModelLogger } from 'model-worklog-sdk';
+import { createLocalModelLogger, LocalSupervisorClient } from 'model-worklog-sdk';
+import { buildSessionLog, buildTraceLog, parseSessionEvent, redactAttributes, redactSensitiveText, TraceDetailSchema } from 'model-worklog-schema';
 import { createTraceCredential, startSupervisor } from 'model-worklog-supervisor';
 
 const PROJECT_ID = 'web-demo';
@@ -17,6 +18,7 @@ const STATIC_FILES = new Map([
 	['/', { file: 'index.html', contentType: 'text/html; charset=utf-8' }],
 	['/app.js', { file: 'app.js', contentType: 'text/javascript; charset=utf-8' }],
 	['/styles.css', { file: 'styles.css', contentType: 'text/css; charset=utf-8' }],
+	['/logo.png', { file: '../../../apps/vscode-extension/media/model-logger.png', contentType: 'image/png' }],
 ]);
 
 function pause(milliseconds) {
@@ -72,12 +74,20 @@ async function readRequestBody(request) {
 	return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-function addEvent(run, message, detail) {
+function addEvent(run, kind, payload, correlationId) {
+	const clean = redactAttributes(payload, { mode: 'redacted-content', maxStringLength: 16_000 });
 	run.events.push({
-		at: new Date().toISOString(),
-		detail,
-		id: randomUUID(),
-		message,
+		schemaVersion: 1,
+		eventId: randomUUID(),
+		sessionId: run.id,
+		sequence: run.events.length + 1,
+		occurredAt: new Date().toISOString(),
+		actor: 'web-dashboard',
+		evidenceGrade: 'model-declared',
+		kind,
+		payload: clean.attributes,
+		...(correlationId === undefined ? {} : { correlationId }),
+		redaction: { policyVersion: '1', replacements: clean.report.redactedFields, truncated: clean.report.truncatedFields > 0 },
 	});
 }
 
@@ -92,6 +102,7 @@ function summarizeTrace(payload) {
 	const spans = Array.isArray(payload?.spans) ? payload.spans : [];
 	return {
 		spanCount: spans.length,
+		activity: spans.length === 0 ? [] : buildTraceLog(spans, { projectId: spans[0].span.projectId, traceId: spans[0].span.traceId }).entries,
 		spans: spans.map(({ evidenceGrade, span }) => ({
 			durationMs: readableDuration(span.startedAt, span.endedAt),
 			evidenceGrade,
@@ -212,58 +223,20 @@ function usageFromSession(session) {
 	};
 }
 
-function usageDetail(usage) {
-	if (usage === undefined) {
-		return 'Not reported by the provider.';
-	}
-	return [
-		`input=${usage.inputTokens}`, `output=${usage.outputTokens}`,
-		`cache-read=${usage.cacheReadTokens}`, `cache-write=${usage.cacheWriteTokens}`,
-		`reasoning=${usage.reasoningTokens}`, `total=${usage.totalTokens}`,
-	].join(' | ');
-}
-
 function describeCopilotEvent(run, event, recordTraceEvent) {
-	const payload = event?.payload;
-	if (event?.kind === 'file.read') {
-		const path = text(value(payload, 'path')) ?? 'Sample workspace file';
-		addEvent(run, 'Copilot read workspace file', path);
-		recordTraceEvent('copilot.file.read', { path });
-		return;
+	const parsed = parseSessionEvent(event);
+	if (!parsed.ok || run.copilotEvents.some((existing) => existing.eventId === event.eventId)) { return; }
+	const clean = redactAttributes(parsed.value.payload, { mode: 'redacted-content', maxStringLength: 16_000 });
+	const captured = { ...parsed.value, payload: clean.attributes };
+	run.copilotEvents.push(captured);
+	if (captured.kind === 'agent.message' && captured.payload.role === 'assistant' && typeof captured.payload.text === 'string') {
+		run.copilotMessages.push(captured.payload.text);
 	}
-	if (event?.kind === 'tool.called') {
-		const tool = text(value(payload, 'tool')) ?? 'Tool';
-		addEvent(run, 'Copilot started tool', tool);
-		recordTraceEvent('copilot.tool.started', { tool });
-		return;
-	}
-	if (event?.kind === 'tool.completed') {
-		const tool = text(value(payload, 'tool')) ?? 'Tool';
-		addEvent(run, 'Copilot completed tool', tool);
-		recordTraceEvent('copilot.tool.completed', { tool });
-		return;
-	}
-	if (event?.kind === 'agent.message') {
-		const message = text(value(payload, 'text'));
-		if (text(value(payload, 'role')) === 'assistant' && message !== undefined) {
-			run.copilotMessages.push(message);
-			addEvent(run, 'Copilot sent visible response', message);
-			recordTraceEvent('copilot.response.received', { characters: message.length });
-		}
-		return;
-	}
-	if (event?.kind === 'agent.summary' && event?.evidenceGrade === 'unknown') {
-		addEvent(run, 'Copilot reasoning withheld', 'Raw reasoning is not captured.');
-		recordTraceEvent('copilot.reasoning.withheld');
-		return;
-	}
-	if (event?.kind === 'adapter.lifecycle') {
-		const phase = text(value(payload, 'phase'));
-		if (phase !== undefined) {
-			addEvent(run, 'Copilot lifecycle', phase);
-			recordTraceEvent('copilot.lifecycle', { phase });
-		}
-	}
+	if (captured.payload.delta === true) { return; }
+	recordTraceEvent(captured.kind, {
+		...(typeof captured.payload.tool === 'string' ? { tool: captured.payload.tool } : {}),
+		...(typeof captured.payload.path === 'string' ? { path: captured.payload.path } : {}),
+	});
 }
 
 function copilotTask(message) {
@@ -276,21 +249,24 @@ function copilotTask(message) {
 }
 
 async function requestCopilotReview(run, context, recordTraceEvent) {
-	addEvent(run, 'Starting Copilot workspace review', 'Isolated workspace copy');
 	recordTraceEvent('copilot.review.started', { workspace: 'isolated-copy' });
 	const started = await supervisorRequest(context.collector, context.collectorToken, '/v1/copilot-sessions', 'POST', {
 		maxDurationMs: COPILOT_MAX_DURATION_MS,
+		captureReasoning: true,
 		task: copilotTask(run.message),
 		workspacePath: context.workspacePath,
+		...(context.provider.model === undefined ? {} : { model: context.provider.model }),
 	});
 	const sessionId = text(value(value(started, 'session'), 'sessionId'));
 	if (sessionId === undefined) {
 		throw new Error('Supervisor did not return a Copilot session ID.');
 	}
 	run.copilotSessionId = sessionId;
+	const reader = new LocalSupervisorClient({ supervisorUrl: context.collector.url, token: context.collectorToken });
 	let afterSequence = 0;
 	let terminal = false;
 	while (!terminal) {
+		run.log = await reader.getLog(sessionId);
 		const snapshot = await supervisorRequest(context.collector, context.collectorToken, `/v1/sessions/${encodeURIComponent(sessionId)}/events?afterSequence=${afterSequence}`, 'GET');
 		const events = Array.isArray(value(snapshot, 'events')) ? value(snapshot, 'events') : [];
 		for (const event of events) {
@@ -305,19 +281,23 @@ async function requestCopilotReview(run, context, recordTraceEvent) {
 			await pause(160);
 		}
 	}
+	run.log = await reader.getLog(sessionId);
 	const completed = await supervisorRequest(context.collector, context.collectorToken, `/v1/sessions/${encodeURIComponent(sessionId)}`, 'GET');
 	const session = value(completed, 'session');
 	const state = text(value(session, 'state'));
 	if (state !== 'completed') {
 		throw new Error(`Copilot session ended with state ${state ?? 'unknown'}. Run copilot login if authentication is required.`);
 	}
-	const content = run.copilotMessages.join('\n\n');
+	const finalMessage = [...run.copilotEvents].reverse().find((event) => event.kind === 'agent.message' && event.payload.role === 'assistant' && event.payload.delta !== true && event.payload.agentId === undefined);
+	const content = typeof finalMessage?.payload.text === 'string' ? finalMessage.payload.text : '';
+	const usage = usageFromSession(session);
+	const model = usage?.models.length === 1 ? text(usage.models[0]) : undefined;
 	return {
 		content: content === '' ? 'Copilot completed without returning a visible assistant message.' : content,
 		mode: 'copilot-cli',
-		model: context.provider.model,
+		...(model === undefined ? {} : { model }),
 		provider: 'github-copilot',
-		usage: usageFromSession(session),
+		usage,
 	};
 }
 
@@ -328,7 +308,7 @@ async function loadTrace(collector, readerToken, traceId) {
 	if (!response.ok) {
 		throw new Error(`Trace readback returned HTTP ${response.status}.`);
 	}
-	return summarizeTrace(await response.json());
+	return TraceDetailSchema.parse(await response.json());
 }
 
 async function executeRun(run, context) {
@@ -349,33 +329,19 @@ async function executeRun(run, context) {
 			serializeResult: (result) => ({ responseLength: result.content.length }),
 		}, async (agentSpan) => {
 			run.traceId = agentSpan.context.traceId;
-			addEvent(run, 'Started agent trace', 'website.chat');
-
-			const classification = await logger.trace({
-				attributes: { 'tool.name': 'classifyPrompt' },
-				kind: 'tool',
-				name: 'prompt.classify',
-				serializeResult: (result) => result,
-			}, async () => {
-				await pause(90);
-				const wordCount = run.message.split(/\s+/).filter(Boolean).length;
-				return { wordCount, category: wordCount > 18 ? 'detailed-request' : 'short-request' };
-			});
-			addEvent(run, 'Prepared model request', `${classification.category}, ${classification.wordCount} words`);
-
 			const providerLabel = context.provider.kind === 'copilot' ? 'GitHub Copilot CLI' : context.provider.kind === 'offline-demo' ? 'Built-in offline demo' : 'OpenAI-compatible endpoint';
-			addEvent(run, 'Calling model', providerLabel);
+			addEvent(run, 'adapter.lifecycle', { adapter: providerLabel, phase: 'request-started' });
 			const result = await logger.trace({
 				attributes: { 'provider.mode': context.provider.kind },
 				input: { message: run.message },
 				kind: 'model',
 				name: 'model.chat.completions',
-				serializeResult: (reply) => ({ model: reply.model, provider: reply.provider, responseLength: reply.content.length }),
+				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, responseLength: reply.content.length }),
 			}, async (modelSpan) => {
 				const reply = context.provider.kind === 'copilot'
 					? await requestCopilotReview(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes))
 					: await requestModel(run.message, context.provider);
-				modelSpan.setAttributes({ 'model.name': reply.model, 'provider.name': reply.provider, 'response.mode': reply.mode });
+				modelSpan.setAttributes({ ...(reply.model === undefined ? {} : { 'model.name': reply.model }), 'provider.name': reply.provider, 'response.mode': reply.mode });
 				modelSpan.addEvent('response.received', { mode: reply.mode, responseLength: reply.content.length });
 				if (reply.usage?.source !== undefined) {
 					const model = text(reply.usage.models?.[0] ?? reply.usage.model);
@@ -396,41 +362,53 @@ async function executeRun(run, context) {
 			});
 			run.response = result.content;
 			run.usage = result.usage;
-			addEvent(run, 'Received assistant response', `${result.provider} / ${result.model}`);
+			if (context.provider.kind !== 'copilot') {
+				addEvent(run, 'agent.message', { role: 'assistant', text: result.content });
+			}
 			agentSpan.addEvent('response.rendered', { responseLength: result.content.length });
 			return result;
 		});
 	} catch (error) {
 		failed = error;
-		run.error = error instanceof Error ? error.message : String(error);
-		addEvent(run, 'Run failed', run.error);
+		run.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
+		addEvent(run, 'session.failed', { state: 'failed', message: run.error });
 	} finally {
 		const delivery = await logger.shutdown();
 		run.delivery = delivery.success;
-	}
-
-	if (failed === undefined && run.traceId !== undefined) {
-		try {
-			run.trace = await loadTrace(context.collector, context.readerToken, run.traceId);
-			addEvent(run, 'Trace stored locally', `${run.trace.spanCount} spans persisted`);
-		} catch (error) {
-			run.error = error instanceof Error ? error.message : String(error);
-			addEvent(run, 'Trace readback failed', run.error);
+		if (!delivery.success) {
+			addEvent(run, 'log.truncated', { message: 'Telemetry delivery is incomplete.', pending: delivery.pending, dropped: delivery.dropped });
 		}
 	}
-	addEvent(run, 'Token usage', usageDetail(run.usage));
+
+	if (run.traceId !== undefined) {
+		try {
+			run.storedTrace = await loadTrace(context.collector, context.readerToken, run.traceId);
+			run.trace = summarizeTrace(run.storedTrace);
+		} catch (error) {
+			run.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
+			addEvent(run, 'adapter.lifecycle', { adapter: 'collector', phase: 'readback-failed', message: run.error });
+		}
+	}
+	if (!run.copilotEvents.some((event) => event.kind === 'usage.reported')) {
+		addEvent(run, run.usage === undefined ? 'usage.unavailable' : 'usage.reported', run.usage === undefined
+			? { message: 'Not reported by the provider.' } : JSON.parse(JSON.stringify(run.usage)));
+	}
 	run.status = failed === undefined && run.error === undefined ? 'completed' : 'failed';
+	if (run.status === 'completed') { addEvent(run, 'session.completed', {}); }
 }
 
 function publicRun(run) {
+	const log = run.log ?? buildSessionLog(run.events, { sessionId: run.id, state: run.status === 'running' ? 'running' : run.status === 'completed' ? 'completed' : 'failed' });
 	return {
+		log,
+		activity: { schemaVersion: 1, entries: log.entries, sourceCount: log.sourceCount },
 		delivery: run.delivery,
 		copilotSessionId: run.copilotSessionId,
 		downloadReady: run.status !== 'running',
 		error: run.error,
 		events: run.events,
 		id: run.id,
-		response: run.response,
+		response: run.response === undefined ? undefined : redactSensitiveText(run.response),
 		status: run.status,
 		trace: run.trace,
 		traceId: run.traceId,
@@ -442,9 +420,16 @@ function downloadRun(run) {
 	return {
 		exportedAt: new Date().toISOString(),
 		interaction: {
-			message: run.message,
-			response: run.response,
+			message: redactSensitiveText(run.message),
+			response: run.response === undefined ? undefined : redactSensitiveText(run.response),
 		},
+		metadata: {
+			activitySchemaVersion: 1,
+			underlyingExecutionComplete: false,
+			privacy: 'Redacted captured activity. Review before sharing. Provider-hidden reasoning is not collected.',
+		},
+		sourceEvents: [...run.events, ...run.copilotEvents],
+		storedSpans: run.storedTrace?.spans ?? [],
 		run: publicRun(run),
 		schemaVersion: 1,
 	};
@@ -468,7 +453,7 @@ export async function startWebDashboard(options = {}) {
 		apiKey: options.apiKey ?? process.env.MODEL_WORKLOG_DEMO_OPENAI_API_KEY,
 		endpoint: options.endpoint ?? process.env.MODEL_WORKLOG_DEMO_OPENAI_URL,
 		kind: providerKind,
-		model: options.model ?? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini',
+		model: options.model ?? (providerKind === 'openai-compatible' ? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini' : undefined),
 	};
 	const sampleWorkspacePath = await realpath(fileURLToPath(new URL('./sample-workspace', import.meta.url)));
 	const workspacePath = await mkdtemp(join(tmpdir(), 'model-worklog-dashboard-workspace-'));
@@ -478,6 +463,7 @@ export async function startWebDashboard(options = {}) {
 		dataDirectory,
 		port: 0,
 		tracePrivacy: { mode: 'redacted-content' },
+		copilotRelayFactory: options.copilotRelayFactory,
 	});
 	const [writer, reader] = await Promise.all([
 		createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'writer', url: collector.url }),
@@ -523,9 +509,14 @@ export async function startWebDashboard(options = {}) {
 					sendError(response, 400, `message must contain 1 to ${MAX_MESSAGE_LENGTH} characters.`);
 					return;
 				}
-				const run = { copilotMessages: [], events: [], id: randomUUID(), message, status: 'running' };
+				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message, status: 'running' };
+				addEvent(run, 'agent.message', { role: 'user', text: message });
 				runs.set(run.id, run);
-				void executeRun(run, { collector, collectorToken: collector.authToken, provider, readerToken: reader.token, workspacePath, writerToken: writer.token });
+				void executeRun(run, { collector, collectorToken: collector.authToken, provider, readerToken: reader.token, workspacePath, writerToken: writer.token }).catch((error) => {
+					run.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
+					run.status = 'failed';
+					addEvent(run, 'session.failed', { state: 'failed', message: run.error });
+				});
 				sendJson(response, 202, { runId: run.id });
 				return;
 			}

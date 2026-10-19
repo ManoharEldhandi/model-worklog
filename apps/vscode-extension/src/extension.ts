@@ -7,7 +7,7 @@ import { installCopilotHook, removeCopilotHook } from './copilotHookInstaller';
 import { LogDetailsView } from './logDetailsView';
 import { logDownloadFileName, presentSession } from './sessionPresentation';
 import { SidebarLogView, type SidebarLogItem } from './sidebarLogView';
-import { cancelSession, deleteSession, getEvidenceBundle, getSessionEventSnapshot, listSessions, registerExtensionClient, releaseExtensionClient, startCodexSession, startCopilotInteractiveSession, startCopilotSession, trustWorkspace, type SupervisorSession } from './supervisorApi';
+import { cancelSession, deleteSession, getEvidenceBundle, getSessionLog, listSessions, registerExtensionClient, releaseExtensionClient, startCodexSession, startCopilotInteractiveSession, startCopilotSession, trustWorkspace, type SupervisorSession } from './supervisorApi';
 import { describeConnection, missingSupervisorFeatures, type SupervisorConnection } from './supervisorClient';
 import { SupervisorRuntime } from './supervisorRuntime';
 import { TraceFeature } from './traceFeature';
@@ -16,7 +16,7 @@ import { INTEGRATION_SCOPE } from './tracePrivacy';
 const SESSION_REFRESH_INTERVAL_MS = 1_000;
 const SELECTED_LOG_REFRESH_INTERVAL_MS = 150;
 const EXTENSION_CLIENT_HEARTBEAT_INTERVAL_MS = 10_000;
-const REQUIRED_SUPERVISOR_FEATURES = ['vscode-client-leases', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage'];
+const REQUIRED_SUPERVISOR_FEATURES = ['vscode-client-leases', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'semantic-session-logs'];
 
 interface ActiveLogFollower {
 	readonly sessionId: string;
@@ -186,7 +186,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			const consent = await vscode.window.showWarningMessage(
-				'Copilot CLI will run this task with tool permission in the trusted workspace. Model Logger will record Copilot\'s visible messages, tool activity, results, and reported usage. Continue?',
+				'Copilot CLI will run this task with tool permission in the trusted workspace. Model Logger will record visible messages, provider-exposed reasoning, tool activity, results, and reported usage. Continue?',
 				{ modal: true },
 				'Start Copilot Task',
 			);
@@ -194,7 +194,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			try {
-				const session = await startCopilotSession(url, workspacePath, task, { maxDurationMs: configuredCopilotDurationMinutes() * 60 * 1_000 });
+				const session = await startCopilotSession(url, workspacePath, task, { maxDurationMs: configuredCopilotDurationMinutes() * 60 * 1_000, captureReasoning: true });
 				await refreshSessions(url, sessionView, false);
 				vscode.window.showInformationMessage(`Copilot CLI activity is now being recorded. Select View Log under Live Activity for ${session.sessionId}.`);
 			} catch (error) {
@@ -559,16 +559,14 @@ async function viewLogInDetails(sessionView: SidebarLogView, detailsView: LogDet
 }
 
 async function followSelectedLog(url: URL, sessionId: string, initialSession: SupervisorSession, detailsView: LogDetailsView, signal: AbortSignal): Promise<void> {
-	let afterSequence = 0;
 	let session = initialSession;
 	while (!signal.aborted) {
-		const snapshot = await getSessionEventSnapshot(url, sessionId, { afterSequence });
+		const snapshot = await getSessionLog(url, sessionId);
 		if (signal.aborted) {
 			return;
 		}
-		detailsView.append(session, snapshot.events);
-		afterSequence = snapshot.cursor.nextSequence;
-		if (snapshot.terminal) {
+		detailsView.setLog(session, snapshot);
+		if (snapshot.state !== 'running') {
 			const sessions = await listSessions(url);
 			session = sessions.find((candidate) => candidate.sessionId === sessionId) ?? session;
 			detailsView.updateSession(session);

@@ -64,14 +64,119 @@ Use counts together with capture reports and SDK delivery status. Bounded queues
 retry exhaustion, and asynchronous spooling can lose telemetry; replay is not
 exactly-once delivery.
 
+## Readable Activity Projection
+
+### Semantic Backend Logs
+
+User-facing consumers should read semantic snapshots from
+`GET /v1/sessions/:id/log` or the scoped
+`GET /v2/traces/:traceId/log?projectId=...` endpoint, not reconstruct a log from
+raw events. The SDK exposes `session.getLog()`, `session.followLog(...)`,
+`client.getLog(sessionId)` and `client.getTraceLog(projectId, traceId, options)`.
+The extension and CLI use the same semantic processor. Existing raw endpoints and
+legacy exports remain available as evidence/debug interfaces.
+
+A snapshot contains ordered `entries`, ready-to-use `lines`, per-entry
+`operations`, one `usage` summary, resource/action `summary`, `capture` metadata,
+separate `diagnostics`, and a cursor. Refresh replaces the snapshot; it does not
+append duplicate entries. Start/stop/turn/model transport notifications and
+unavailable-reasoning notices belong in diagnostics/capabilities, not in the
+ordinary action stream. Failed operations and explicit user-facing errors remain
+visible. Session lifecycle is a snapshot state rather than duplicate completion
+rows. File and directory counts include successful observations, not failed reads.
+
+Usage is a single stable entry that evolves as request reports arrive. Explicit
+provider/request identities deduplicate reports; conflicting identities, missing
+counters, overflow and incomplete trace pages remain partial/unknown. Numeric
+reasoning tokens are separate from reasoning text. The native Copilot relay reads
+its documented metadata exporter while running, not only after exit. Recorded
+usage retains which categories the provider actually supplied.
+
+Readable provider-exposed reasoning and message deltas are correlated, assembled
+live, and replaced by explicit final snapshots without duplicating the final
+text. Commentary, reasoning, tool actions, results and response remain ordered.
+Parallel/sub-agent work retains its actor scope; it is not merged with another
+agent's identically named tool. Tool results stay linked to their particular
+operation even when several reads share one segment. The final chat response is
+not concatenated with earlier progress messages.
+
+Copilot readable reasoning capture is explicitly opt-in (`captureReasoning`).
+Only documented exposed fields are captured; opaque/encrypted reasoning is never
+decoded. The [official Copilot event reference](https://github.com/github/copilot-sdk/blob/main/docs/features/streaming-events.md)
+defines these fields. Other producers may emit an explicitly opted-in
+`agent.reasoning.summary` span event with `visibility: 'provider-exposed'` and a
+`summary`; normal SDK/collector privacy still applies. No text is invented when
+a provider does not expose it. These are producer statements, not independent
+proof that an explanation is complete or faithful to internal computation.
+
+### Low-Level Projection
+
+The schema package and SDK export `buildSessionActivity`, `buildTraceActivity`, and
+`formatActivityText`. These deterministic functions turn captured records into
+version-1 `ActivityEntry` objects. The projection is not another evidence grade,
+an AI-generated interpretation, or a replacement for source events and spans.
+
+Each entry carries a stable ID, category, status, actor/service, start and optional
+end timestamps, resources, named tools/MCP servers, details, capture warnings,
+and source references. Session references retain session/event IDs, sequence,
+correlation, timestamp and evidence grade. Span references retain project, trace,
+span and revision IDs, with parent relationships on entries. Preserve these
+references when indexing or exporting; a readable heading alone is not evidence.
+
+- Consecutive file reads become one segment with unique paths and repeated-read
+	counts. Tool start/read/result triples share that segment when their explicit
+	correlation matches. Every source reference and captured result remains available.
+- Grouping respects actor, evidence, session/trace and parent boundaries. Commentary,
+	another action, failure, or a gap of more than 30 seconds after the preceding
+	segment ends creates another segment. Overlapping sibling reads may group.
+- Counts are derived from retained operations, not a target group size. SDK file
+	tools can explicitly set `file.operation` and `file.path`, with optional
+	`file.type`; the tool can have any name or MCP server. Supported operations are
+	`read`, `created`, `modified`, `deleted` and `changed`. Explicit semantics take
+	precedence over known read-tool names and apply only to tool spans. These fields
+	still require both privacy policies to allow them; formatting does not widen
+	capture. Other operations remain their own typed or generic activities.
+- Tools and commands pair only through explicit correlation within their source
+	scope. Missing or reused correlations are not guessed. Failed reads stay
+	separate; missing outcomes remain unknown, not successful or failed by inference.
+- Adjacent output fragments from the same correlated stream join without invented
+	newlines. Explicit `delta: true` message, plan and visible-summary fragments join
+	only with a matching correlation. An explicit `final: true` snapshot replaces
+	that stream's displayed text, retaining every source reference. Distinct messages,
+	tests, changes and capture gaps remain separate. Provider-hidden reasoning is
+	not supplied.
+- Session times describe collector receipt, not independently verified execution
+	times. A grouped time range is the range of captured observations; it is not
+	the sum of operation durations. Trace times remain producer-supplied span times.
+- Presentation applies additional privacy filtering and bounded detail strings.
+	Explicit warnings identify shortened detail. Expanding a row is not redaction;
+	it reveals more of the same retained, filtered presentation.
+
+The dashboard and VS Code use expandable chronological activities. The dashboard
+also provides type/search filters and a separate SDK span view. CLI pretty logs
+use the same projection; pretty watch holds the open segment until an action
+boundary or final snapshot. CLI JSON/JSONL remain canonical event outputs.
+
+Dashboard downloads include activities alongside source events and captured spans.
+VS Code trace exports include activities alongside their retained spans, with
+`metadata.activitySchemaVersion: 1`. Existing legacy evidence bundles remain
+unchanged. These exports still do not establish complete underlying execution.
+
+A later retrieval layer can select by category, resource path, tool/server, time,
+status and project, then resolve source references for citations and context.
+Do not discard original records, infer missing content from group counts, or
+index provider-hidden reasoning. Retrieval and embeddings are not implemented by
+this presentation layer.
+
 ## Privacy And Export
 
 SDK content requires application and operator opt-in. Redaction runs before SDK
 queue/spool persistence and again at collector intake. Spools contain redacted
 snapshots, not a raw archive. Redaction is best effort; metadata and allowed
 attributes can still be sensitive. Never submit provider-hidden reasoning.
-Legacy adapters may retain a separately exposed, user-visible reasoning summary,
-not private chain-of-thought. See [security](security-model.md).
+Adapters may retain explicitly enabled, readable provider-exposed reasoning or
+visible summaries, not inaccessible or encrypted private state. See
+[security](security-model.md).
 
 VS Code **Export Captured Trace JSON** contains retained spans and capture metadata,
 including `underlyingExecutionComplete: false`. It collects available pages with

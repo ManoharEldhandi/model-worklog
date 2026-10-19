@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { after, test } from 'node:test';
 
-import { parseHealthResponse } from 'model-worklog-schema';
+import { ActivityLogSchema, parseHealthResponse } from 'model-worklog-schema';
 
 import { startSupervisor, type RunningSupervisor, type StartOptions } from './server';
 import type { CodexRelayFactory } from './codexRelay';
@@ -104,6 +104,30 @@ test('binds to an ephemeral loopback port and serves valid health', async () => 
 		assert.equal(parsed.value.instanceId, supervisor.instanceId);
 		assert.equal(parsed.value.status, 'ok');
 	}
+});
+
+test('semantic session log endpoint owns grouping, usage, live snapshots and authentication', async () => {
+	const supervisor = await start();
+	await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath: process.cwd() });
+	const created = await api(supervisor, '/v1/sessions', 'POST', { workspacePath: process.cwd(), actor: 'custom-sdk', runMode: 'observe' });
+	assert.equal(created.status, 201);
+	const { session } = await created.json() as { session: { sessionId: string } };
+	const path = `/v1/sessions/${session.sessionId}`;
+	for (const name of ['one.ts', 'two.ts']) {
+		assert.equal((await api(supervisor, `${path}/events`, 'POST', { kind: 'file.read', actor: 'custom-sdk', evidenceGrade: 'model-declared', payload: { path: name } })).status, 201);
+	}
+	await api(supervisor, `${path}/usage`, 'POST', { source: 'provider-reported', providerResponseId: 'request-one', inputTokens: 8, outputTokens: 2, totalTokens: 10 });
+	const live = ActivityLogSchema.parse(await (await api(supervisor, `${path}/log`)).json());
+	assert.equal(live.state, 'running');
+	assert.equal(live.entries.filter((entry) => entry.category === 'files').length, 1);
+	assert.equal(live.entries.filter((entry) => entry.category === 'usage').length, 1);
+	assert.equal(live.usage.counts.reasoningTokens, undefined);
+	await api(supervisor, `${path}/complete`, 'POST', { state: 'completed' });
+	const completed = ActivityLogSchema.parse(await (await api(supervisor, `${path}/log`)).json());
+	assert.equal(completed.state, 'completed');
+	assert.equal(completed.entries.some((entry) => entry.category === 'lifecycle'), false);
+	assert.equal(completed.lines.some((line) => line.includes('Read 2 files')), true);
+	assert.equal((await api(supervisor, `${path}/log`, 'GET', undefined, 'wrong')).status, 401);
 });
 
 test('unknown path returns 404 over the socket', async () => {

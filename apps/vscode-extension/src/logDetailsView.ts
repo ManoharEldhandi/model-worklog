@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 import * as vscode from 'vscode';
 
-import type { SessionEvent } from 'model-worklog-schema';
+import type { ActivityLog, SessionEvent } from 'model-worklog-schema';
 
-import { buildLogDetail, type LogDetailModel } from './logDetailPresentation';
+import { buildLogDetail, buildLogDetailFromLog, type LogDetailModel } from './logDetailPresentation';
 import type { SupervisorSession } from './supervisorApi';
 
 const DETAILS_CONTAINER_COMMAND = 'workbench.view.extension.model-worklog-details';
@@ -31,6 +31,12 @@ export function logDetailsHtml(): string {
   h2 { margin: 0 0 8px; color: var(--vscode-sideBarSectionHeader-foreground); font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: uppercase; }
   .entry { padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--vscode-panel-border) 55%, transparent); }
   .entry:first-of-type { border-top: 0; }
+  .entry-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+  .timestamp { font: 11px var(--vscode-editor-font-family); color: var(--vscode-descriptionForeground); }
+  .state { font-size: 10px; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
+  .entry[data-status="failed"] .state { color: var(--vscode-errorForeground); }
+  .entry[data-status="running"] .state { color: var(--vscode-progressBar-background); }
+  .entry[data-status="unknown"] .state { color: var(--vscode-editorWarning-foreground); }
   .label { font-size: 12px; font-weight: 600; }
   pre { margin: 4px 0 0; color: var(--vscode-editor-foreground); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.45; }
   pre.preview { max-height: 2.9em; overflow: hidden; }
@@ -60,10 +66,28 @@ export function logDetailsHtml(): string {
   function entry(value, entryId) {
     const element = document.createElement('div');
     element.className = 'entry' + (value.content ? '' : ' empty');
+    if (value.status) element.dataset.status = value.status;
+    const heading = document.createElement('div');
+    heading.className = 'entry-heading';
+    if (value.timestamp) {
+      const time = document.createElement('time');
+      time.className = 'timestamp';
+      time.dateTime = value.timestamp;
+      time.title = value.timestamp + (value.endedAt ? ' .. ' + value.endedAt : '');
+      time.textContent = value.timestamp.slice(11, 23) + 'Z' + (value.endedAt && value.endedAt !== value.timestamp ? ' - ' + value.endedAt.slice(11, 23) + 'Z' : '');
+      heading.append(time);
+    }
     const label = document.createElement('div');
     label.className = 'label';
     label.textContent = value.label;
-    element.append(label);
+    heading.append(label);
+    if (value.status && value.status !== 'info') {
+      const state = document.createElement('span');
+      state.className = 'state';
+      state.textContent = value.status;
+      heading.append(state);
+    }
+    element.append(heading);
     if (value.content) {
       const body = document.createElement('pre');
       body.textContent = value.content;
@@ -115,7 +139,7 @@ export function logDetailsHtml(): string {
       const heading = document.createElement('h2');
       heading.textContent = section.title;
       area.append(heading);
-      section.entries.forEach((item, index) => area.append(entry(item, model.sessionId + ':' + section.title + ':' + index + ':' + item.label)));
+      section.entries.forEach((item, index) => area.append(entry(item, item.id || model.sessionId + ':' + section.title + ':' + index + ':' + item.label)));
       content.append(area);
     }
   }
@@ -133,6 +157,7 @@ export class LogDetailsView implements vscode.WebviewViewProvider {
 	private view: vscode.WebviewView | undefined;
 	private model: LogDetailModel | undefined;
 	private selectedEvents: readonly SessionEvent[] = [];
+  private selectedLog: ActivityLog | undefined;
   private ready = false;
 
 	get selectedSessionId(): string | undefined {
@@ -159,6 +184,7 @@ export class LogDetailsView implements vscode.WebviewViewProvider {
 
 	async select(session: SupervisorSession): Promise<void> {
 		this.selectedEvents = [];
+    this.selectedLog = undefined;
 		this.model = buildLogDetail(session, this.selectedEvents);
 		await this.reveal();
 		await this.post();
@@ -182,15 +208,23 @@ export class LogDetailsView implements vscode.WebviewViewProvider {
 		if (this.model?.sessionId !== session.sessionId) {
 			return;
 		}
-		this.model = buildLogDetail(session, this.selectedEvents);
+    this.model = this.selectedLog === undefined ? buildLogDetail(session, this.selectedEvents) : buildLogDetailFromLog(session, this.selectedLog);
 		void this.post();
 	}
+
+  setLog(session: SupervisorSession, log: ActivityLog): void {
+    if (this.model?.sessionId !== session.sessionId) { return; }
+    this.selectedLog = log;
+    this.model = buildLogDetailFromLog(session, log);
+    void this.post();
+  }
 
 	clear(sessionId?: string): void {
 		if (sessionId !== undefined && this.model?.sessionId !== sessionId) {
 			return;
 		}
 		this.model = undefined;
+    this.selectedLog = undefined;
 		this.selectedEvents = [];
 		void this.post();
 	}

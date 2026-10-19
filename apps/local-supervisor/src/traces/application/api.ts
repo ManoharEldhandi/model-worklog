@@ -1,4 +1,5 @@
 import {
+	buildTraceLog,
 	ProjectIdSchema, TraceDetailSchema, TraceIdSchema, TraceListSchema, TraceSpanSchema,
 	type TracePrincipal,
 } from 'model-worklog-schema';
@@ -9,7 +10,7 @@ import { TraceIntake } from './intake';
 
 export type TraceOperation = { kind: 'identity' } | { kind: 'credential-create' } | { kind: 'batch' } | { kind: 'otlp' }
 	| { kind: 'list' } | { kind: 'retention' } | { kind: 'credential-revoke'; id: string }
-	| { kind: 'detail'; id: string } | { kind: 'delete'; id: string };
+	| { kind: 'detail'; id: string } | { kind: 'log'; id: string } | { kind: 'delete'; id: string };
 
 export interface TraceApiResult { readonly statusCode: number; readonly body: unknown }
 
@@ -57,11 +58,13 @@ function operation(method: string, pathname: string): TraceOperation {
 		if (method !== 'DELETE') { throw new TraceError(400, 'method_not_allowed', 'This endpoint requires DELETE.'); }
 		return { kind: 'credential-revoke', id: credential };
 	}
-	const traceId = /^\/v2\/traces\/([^/]+)$/.exec(pathname)?.[1];
+	const traceMatch = /^\/v2\/traces\/([^/]+)(\/log)?$/.exec(pathname);
+	const traceId = traceMatch?.[1];
 	if (traceId !== undefined) {
+		if (traceMatch?.[2] !== undefined && method !== 'GET') { throw new TraceError(400, 'method_not_allowed', 'This endpoint requires GET.'); }
 		if (method !== 'GET' && method !== 'DELETE') { throw new TraceError(400, 'method_not_allowed', 'This endpoint requires GET or DELETE.'); }
 		if (!TraceIdSchema.safeParse(traceId).success) { throw new TraceError(400, 'invalid_trace_id', 'Invalid trace identifier.'); }
-		return { kind: method === 'GET' ? 'detail' : 'delete', id: traceId };
+		return { kind: traceMatch?.[2] !== undefined ? 'log' : method === 'GET' ? 'detail' : 'delete', id: traceId };
 	}
 	throw new TraceError(404, 'not_found', 'Trace endpoint not found.');
 }
@@ -79,7 +82,7 @@ export class TraceApi {
 	authorize(principal: TracePrincipal, method: string, pathname: string): TraceOperation {
 		const selected = operation(method, pathname);
 		if (selected.kind === 'batch' || selected.kind === 'otlp') { requireRole(principal, ['writer', 'admin']); }
-		else if (selected.kind === 'list' || selected.kind === 'detail') { requireRole(principal, ['reader', 'admin']); }
+		else if (selected.kind === 'list' || selected.kind === 'detail' || selected.kind === 'log') { requireRole(principal, ['reader', 'admin']); }
 		else if (selected.kind !== 'identity') { requireRole(principal, ['admin']); }
 		return selected;
 	}
@@ -90,14 +93,14 @@ export class TraceApi {
 	}
 
 	handle(selected: TraceOperation, principal: TracePrincipal, query: URLSearchParams, body: unknown): TraceApiResult {
-		if (selected.kind === 'list' || selected.kind === 'detail' || selected.kind === 'delete') {
+		if (selected.kind === 'list' || selected.kind === 'detail' || selected.kind === 'log' || selected.kind === 'delete') {
 			fields(query, selected.kind === 'delete' ? ['projectId'] : ['projectId', 'limit', 'cursor']);
 			const projectId = project(principal, query.get('projectId'));
 			if (selected.kind === 'delete') {
 				if (!this.repository.delete(projectId, selected.id)) { throw new TraceError(404, 'trace_not_found', 'Trace not found in the authorized project.'); }
 				return { statusCode: 200, body: { schemaVersion: 1, deleted: true } };
 			}
-			const scope = { projectId, ...(selected.kind === 'detail' ? { traceId: selected.id } : {}) };
+			const scope = { projectId, ...(selected.kind === 'detail' || selected.kind === 'log' ? { traceId: selected.id } : {}) };
 			const cursor = query.get('cursor');
 			const after = cursor === null ? undefined : this.cursors.decode(cursor, scope);
 			const size = limit(query.get('limit'), selected.kind === 'list' ? 50 : 100, selected.kind === 'list' ? 100 : 1_000);
@@ -106,6 +109,9 @@ export class TraceApi {
 				return { statusCode: 200, body: TraceListSchema.parse({ schemaVersion: 1, traces: page.items, nextCursor: page.after === undefined ? null : this.cursors.encode(page.after, scope) }) };
 			}
 			const page = this.repository.detail(projectId, selected.id, size, after);
+			if (selected.kind === 'log') {
+				return { statusCode: 200, body: buildTraceLog(page.items, { projectId, traceId: selected.id, nextCursor: page.after === undefined ? null : this.cursors.encode(page.after, scope) }) };
+			}
 			return { statusCode: 200, body: TraceDetailSchema.parse({ schemaVersion: 1, spans: page.items, nextCursor: page.after === undefined ? null : this.cursors.encode(page.after, scope) }) };
 		}
 		fields(query, []);

@@ -1,7 +1,9 @@
 import * as assert from 'assert';
+import { execFile } from 'node:child_process';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import { copilotHookPath, installCopilotHook, removeCopilotHook } from '../copilotHookInstaller';
 import { codexSessionPath, copilotInteractiveSessionPath, copilotSessionPath, deleteSession, evidenceBundlePath, extensionClientPath, sessionEventQueryPath } from '../supervisorApi';
@@ -67,14 +69,35 @@ suite('Extension Test Suite', () => {
 			assert.strictEqual(config.version, 1);
 			assert.deepStrictEqual(Object.keys(config.hooks), ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SubagentStop', 'SessionEnd', 'ErrorOccurred']);
 			assert.deepStrictEqual(config.hooks.SessionStart?.[0], {
-				type: 'command', exec: 'node', args: ['/extension/dist/copilot-hook-bridge.js'],
+				type: 'command', exec: 'node', args: ['-e', config.hooks.SessionStart?.[0]?.args[1], '/extension/dist/copilot-hook-bridge.js'],
 				env: { MODEL_WORKLOG_HOOK_BRIDGE: '1', MODEL_WORKLOG_SUPERVISOR_URL: 'http://127.0.0.1:43199/', MODEL_WORKLOG_HOME: '/model-worklog' }, timeoutSec: 3,
 			});
+			assert.match(config.hooks.SessionStart?.[0]?.args[1] ?? '', /pathToFileURL/);
 			await removeCopilotHook(environment);
 			await assert.rejects(() => access(path));
 		} finally {
 			await rm(copilotHome, { recursive: true, force: true });
 		}
+	});
+
+	test('a missing or broken Logger bridge never blocks the Copilot tool permission hook', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'model-worklog hook-'));
+		const execute = promisify(execFile);
+		try {
+			for (const state of ['missing', 'broken', 'available']) {
+				const bridgePath = join(directory, `${state}.cjs`);
+				if (state !== 'missing') {
+					await writeFile(bridgePath, state === 'broken' ? 'throw new Error("bridge unavailable");' : 'process.stdout.write("{\\"bridge\\":\\"available\\"}\\n");', 'utf8');
+				}
+				const path = await installCopilotHook({ bridgePath, supervisorUrl: 'http://127.0.0.1:43199/' }, { COPILOT_HOME: directory });
+				const config = JSON.parse(await readFile(path, 'utf8')) as { hooks: { PreToolUse: { exec: string; args: string[] }[] } };
+				const hook = config.hooks.PreToolUse[0];
+				assert.ok(hook);
+				const result = await execute(hook.exec, hook.args, { timeout: 5_000 });
+				assert.deepStrictEqual(JSON.parse(result.stdout), state === 'available' ? { bridge: 'available' } : {});
+				assert.strictEqual(result.stderr, '');
+			}
+		} finally { await rm(directory, { recursive: true, force: true }); }
 	});
 });
 
@@ -382,12 +405,15 @@ suite('Selected log details', () => {
 		];
 		const detail = buildLogDetail(session, events);
 		assert.strictEqual(detail.title, 'Review the parser.');
-		assert.deepStrictEqual(detail.sections.map((section) => section.title), ['User Request', 'Agent Plan', 'Tools Used', 'Agent Response', 'Tokens Used']);
-		assert.equal(detail.sections[0]?.entries[0]?.content, 'Review the parser.');
-		assert.equal(detail.sections[1]?.entries[0]?.content, 'Plan:\nRead source, then run tests.');
-		assert.ok(detail.sections[2]?.entries.some((entry) => entry.label.includes('read_file selected')));
-		assert.equal(detail.sections[3]?.entries[0]?.content, 'The parser was reviewed and the focused test passed.');
-		assert.deepStrictEqual(detail.sections.at(-1)?.entries.slice(0, 4).map((entry) => entry.label), ['Total: 40', 'Input: 30', 'Output: 10', 'Reasoning: 2']);
+		assert.deepStrictEqual(detail.sections.map((section) => section.title), ['Activity']);
+		assert.ok(detail.sections[0]?.entries[0]?.content?.includes('Review the parser.'));
+		assert.equal(detail.activity[1]?.category, 'plan');
+		assert.ok(detail.sections[0]?.entries.some((entry) => entry.label === 'Tool: read_file'));
+		assert.ok(detail.sections[0]?.entries.some((entry) => entry.content?.includes('The parser was reviewed and the focused test passed.')));
+		assert.ok(detail.sections[0]?.entries.every((entry) => entry.timestamp !== undefined && entry.id !== undefined));
+		assert.strictEqual(detail.activity.filter((entry) => entry.category === 'usage').length, 1);
+		assert.strictEqual(detail.log.usage.counts.totalTokens, 40);
+		assert.strictEqual(detail.log.usage.counts.reasoningTokens, 2);
 	});
 
 	test('keeps complete entry content in the detail model for compact webview expansion and JSON export', () => {
@@ -400,8 +426,23 @@ suite('Selected log details', () => {
 			{ schemaVersion: 1, eventId: 'evt_request', sessionId: session.sessionId, sequence: 1, occurredAt: '2026-09-17T06:00:00.000Z', kind: 'agent.message', actor: 'example-agent', evidenceGrade: 'model-declared', payload: { role: 'user', text: 'Summarize the result.' }, redaction: { policyVersion: '1', replacements: 0, truncated: false } },
 			{ schemaVersion: 1, eventId: 'evt_response', sessionId: session.sessionId, sequence: 2, occurredAt: '2026-09-17T06:00:01.000Z', kind: 'agent.message', actor: 'example-agent', evidenceGrade: 'model-declared', payload: { role: 'assistant', text: response }, redaction: { policyVersion: '1', replacements: 0, truncated: false } },
 		]);
-		const agentResponse = detail.sections.find((section) => section.title === 'Agent Response')?.entries[0]?.content;
+		const agentResponse = detail.activity.find((entry) => entry.category === 'response')?.details.find((entry) => entry.label === 'Message')?.value;
 		assert.strictEqual(agentResponse, response);
+	});
+
+	test('uses one stable chronological segment for 100 file reads', () => {
+		const session = { sessionId: 'ses_grouped', state: 'running', runMode: 'observe', actor: 'agent', eventCount: 100,
+			tokenUsage: { status: 'unknown', reason: 'not-observed' } as const };
+		const events: SessionEvent[] = Array.from({ length: 100 }, (_, index) => ({ schemaVersion: 1,
+			eventId: `read_${index}`, sessionId: session.sessionId, sequence: index + 1, occurredAt: '2026-09-17T06:00:00.000Z',
+			kind: 'file.read', actor: 'agent', evidenceGrade: 'model-declared', payload: { path: `src/${index}.ts`, tool: 'read_file' },
+			redaction: { policyVersion: '1', replacements: 0, truncated: false } }));
+		const model = buildLogDetail(session, events);
+		assert.strictEqual(model.activity.length, 1);
+		assert.strictEqual(model.sections[0]?.entries.length, 1);
+		assert.strictEqual(model.sections[0]?.entries[0]?.label, 'Read 100 files');
+		assert.ok(model.sections[0]?.entries[0]?.content?.includes('src/99.ts'));
+		assert.strictEqual(model.activity[0]?.sources.length, 100);
 	});
 
 	test('keeps token availability in the final section when an integration does not report usage', () => {
@@ -412,10 +453,8 @@ suite('Selected log details', () => {
 		const detail = buildLogDetail(session, [
 			{ schemaVersion: 1, eventId: 'evt_request', sessionId: session.sessionId, sequence: 1, occurredAt: '2026-09-17T06:00:00.000Z', kind: 'agent.message', actor: 'copilot-cli-hook', evidenceGrade: 'model-declared', payload: { role: 'user', text: 'Inspect the task.' }, redaction: { policyVersion: '1', replacements: 0, truncated: false } },
 		]);
-		assert.strictEqual(detail.sections.at(-1)?.title, 'Tokens Used');
-		assert.deepStrictEqual(detail.sections.at(-1)?.entries, [{
-			label: 'Unavailable from Copilot CLI hook',
-			content: 'Copilot CLI does not provide token usage to automatic hooks. Use Log a Copilot CLI Task to record provider-reported usage.',
-		}]);
+		assert.strictEqual(detail.log.usage.status, 'unknown');
+		assert.strictEqual(detail.log.capture.reasoning, 'not-reported');
+		assert.strictEqual(detail.activity.filter((entry) => entry.category === 'usage').length, 0);
 	});
 });

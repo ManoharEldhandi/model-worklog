@@ -1,13 +1,13 @@
 # model-worklog-supervisor
 
 Same-host trace collector and local store for Model Logger. Requires Node.js
-**>=22.13**, including built-in SQLite support. This reference targets upcoming
-**0.2.0**; the new tracing API remains unpublished until the operator releases it.
-Use locally built workspace packages meanwhile. No CLI setup is required.
+**>=22.13**, including built-in SQLite support. This reference targets **2.1.0**.
+GitHub source/VSIX releases and npm publication are separate; use locally built
+workspace packages until registry publication. No CLI setup is required.
 
 ## Programmatic Startup
 
-After publication, install `model-worklog-supervisor@0.2.0`. In an operator process:
+After publication, install `model-worklog-supervisor@2.1.0`. In an operator process:
 
 ```js
 import { startSupervisor, createTraceCredential } from 'model-worklog-supervisor';
@@ -61,6 +61,7 @@ For OTLP, send `x-model-worklog-project` matching the writer's authorized projec
 | `POST /v1/traces` | Writer/admin | OTLP HTTP JSON or protobuf final spans. |
 | `GET /v2/traces?projectId=...` | Reader/admin | Trace summaries with `nextCursor`. |
 | `GET /v2/traces/:traceId?projectId=...` | Reader/admin | Stored spans with `nextCursor`. |
+| `GET /v2/traces/:traceId/log?projectId=...` | Reader/admin | Semantic activity, one usage summary, source-linked operations and `nextCursor`. |
 | `DELETE /v2/traces/:traceId?projectId=...` | Admin | Delete the selected project's trace. |
 | `POST /v2/traces/retention` | Admin | `{ projectId, before?, limit? }`; requires `before` or a configured retention TTL. |
 
@@ -68,6 +69,18 @@ Ingest limits are **100 spans/snapshots and 2 MiB per request**. OTLP content ty
 are `application/json` and `application/x-protobuf`; compression and gRPC are not
 supported. Bound exporter batches and content before sending. The collector
 deduplicates revisions; conflicting current revisions return `409`.
+
+`GET /v1/sessions/:id/log` is the compatibility session-log reader, authenticated
+with the installation credential (not scoped trace credentials). It returns one
+complete semantic snapshot for the retained session: ordered entries, plain-text
+lines, structured operations/results, one evolving usage entry, capture metadata,
+resource counts and separate diagnostics. The SDK `getLog` / `followLog` APIs read
+this endpoint. No frontend parsing or token summation is required.
+
+Managed Copilot launch requests can explicitly set `captureReasoning: true` for
+documented readable provider-exposed reasoning and deltas. It defaults to false.
+Opaque/encrypted fields are never retained or decoded. The native metadata usage
+export is ingested while the task runs; semantic snapshots update one usage row.
 
 Queries require `projectId`; cursors are opaque and scope-bound. List page size is
 50 by default, at most 100; detail is 100 by default, at most 1,000. Use `limit`

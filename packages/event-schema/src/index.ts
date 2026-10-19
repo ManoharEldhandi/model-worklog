@@ -4,5 +4,7 @@ export * from './evidence';
 export * from './events';
 export * from './health';
 export * from './presentation';
+export * from './activity';
+export * from './activityLog';
 export * from './trace';
 export * from './privacy';
