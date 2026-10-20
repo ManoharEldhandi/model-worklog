@@ -1,4 +1,4 @@
-import type { LogQueryEvidence, LogQueryResponse, LogQueryScope, LogQueryTotals, LogSynthesisResult, LogToolUsage } from 'model-worklog-schema';
+import type { LogConversationMessage, LogQueryEvidence, LogQueryOverview, LogQueryResponse, LogQueryScope, LogQueryTotals, LogSynthesisResult, LogToolUsage } from 'model-worklog-schema';
 
 import type { LogQueryPlan } from './queryPlanner';
 
@@ -9,6 +9,8 @@ export interface LogQuerySnapshot {
 	readonly matchedSpans: number;
 	readonly toolsTruncated: boolean;
 	readonly strategy: LogQueryResponse['retrieval']['strategy'];
+	readonly overview?: LogQueryOverview;
+	readonly contextExpanded?: boolean;
 }
 
 export interface LogQueryRepository {
@@ -20,7 +22,9 @@ export interface LogQueryAdmission {
 }
 
 export interface LogAnswerGenerator {
-	generate(question: string, evidence: Readonly<LogQueryResponse>, signal: AbortSignal): Promise<LogSynthesisResult>;
+	readonly provider?: string;
+	readonly model?: string;
+	generate(question: string, evidence: Readonly<LogQueryResponse>, signal: AbortSignal, history?: readonly Readonly<LogConversationMessage>[]): Promise<LogSynthesisResult>;
 }
 
 export interface SpanPersistenceInterceptor {

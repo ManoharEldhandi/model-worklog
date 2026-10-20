@@ -121,7 +121,7 @@ test('Unicode-heavy labels and excerpts remain bounded valid evidence', async (c
 	repository.ingest([span], span.span.startedAt);
 	const result = queries.retrieve({ projectId: 'project' }, planLogQuery('uniquecontent'), 8);
 	assert.equal(result.evidence.length, 1);
-	assert.ok(result.evidence[0]!.excerpt.length <= 1600);
+	assert.ok(result.evidence[0]!.excerpt.length <= 6000);
 	assert.equal(result.tools[0]?.name, 'read_file');
 });
 
@@ -136,4 +136,45 @@ test('query admission windows expire independently and bound tracked credential 
 	assert.throws(() => admission.admit('overflow'), /30 per credential/);
 	clock += 60_000;
 	assert.doesNotThrow(() => admission.admit('overflow'));
+});
+
+test('conversational retrieval prioritizes captured replies and expands context without crossing projects', async (context) => {
+	const { repository, queries } = await store(context);
+	const first = prepared({ kind: 'agent', name: 'review', attributes: { input: { message: 'Review inventory' } } });
+	repository.ingest([first, prepared({ spanId: '2'.repeat(16), kind: 'custom', name: 'agent.message', attributes: { 'message.role': 'assistant', 'source.kind': 'agent.message', output: 'The spring discount is 15 percent.' } }), prepared({ projectId: 'other', attributes: { output: 'Private other-project answer.' } })], first.span.startedAt);
+	const plan = { ...planLogQuery('What did it answer?'), contextual: true };
+	const result = queries.retrieve({ projectId: 'project' }, plan, 8);
+	assert.equal(result.strategy, 'contextual-spans');
+	assert.equal(result.evidence[0]?.name, 'agent.message');
+	assert.match(result.evidence[0]!.excerpt, /spring discount/);
+	assert.ok(result.evidence.every((source) => source.projectId === 'project'));
+	const expanded = queries.retrieve({ projectId: 'project' }, { intent: 'search', terms: ['unmatchedword'], contextual: true }, 8);
+	assert.equal(expanded.matchedSpans, 0);
+	assert.equal(expanded.contextExpanded, true);
+	assert.equal(expanded.evidence.length, 2);
+});
+
+test('overview preserves unknown usage and deduplicates reported model requests without counting tool usage', async (context) => {
+	const { repository, queries } = await store(context);
+	const model = prepared({ kind: 'model', name: 'model', usage: { source: 'provider-reported', provider: 'example', model: 'actual-model', requestId: 'shared', totalTokens: 12 } });
+	repository.ingest([{ ...model, usageKey: 'shared' }, { ...prepared({ ...model.span, spanId: '2'.repeat(16) }), usageKey: 'shared' }, prepared({ spanId: '3'.repeat(16), kind: 'model', name: 'unknown' }), prepared({ spanId: '4'.repeat(16), usage: { source: 'adapter-reported', model: 'tool-not-model', totalTokens: 999 } })], model.span.startedAt);
+	const result = queries.retrieve({ projectId: 'project' }, { intent: 'search', terms: [], focus: 'usage', contextual: true }, 8);
+	assert.equal(result.overview?.reportedTokens, 12);
+	assert.equal(result.overview?.modelSpans, 3);
+	assert.equal(result.overview?.reportedModelSpans, 2);
+	assert.equal(result.overview?.usageComplete, false);
+	assert.deepEqual(result.overview?.models, ['actual-model']);
+	assert.equal(result.evidence[0]?.kind, 'model');
+});
+
+test('conversational file questions retain broader context even when a run contains many repeated tools', async (context) => {
+	const { repository, queries } = await store(context);
+	const root = prepared({ kind: 'agent', name: 'review', attributes: { input: { message: 'Investigate negative inventory quantities.' } } });
+	const tools = Array.from({ length: 40 }, (_, index) => prepared({ spanId: (index + 2).toString(16).padStart(16, '0'), attributes: { input: { path: 'src/inventory.ts' } } }));
+	repository.ingest([root, ...tools], root.span.startedAt);
+	const result = queries.retrieve({ projectId: 'project' }, { ...planLogQuery('Why were those files read?'), contextual: true }, 12);
+	assert.equal(result.evidence.length, 12);
+	assert.ok(result.evidence.some((source) => source.kind === 'agent' && source.excerpt.includes('negative inventory')));
+	assert.equal(result.contextExpanded, true);
+	assert.equal(result.totals.toolCalls, 40);
 });

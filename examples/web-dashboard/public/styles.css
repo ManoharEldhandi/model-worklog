@@ -105,11 +105,12 @@ pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
 .query-panel select, .query-panel input { min-width: 0; width: 100%; height: 36px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--paper); }
 .query-panel button { min-height: 36px; padding: 6px 12px; }
 .query-scope-row button { flex: none; }
-.query-form { flex: none; }
+.query-form { flex: none; border-top: 1px solid var(--line); padding: 14px 0 18px; }
 .query-form > label { display: block; font-size: 12px; margin-bottom: 6px; }
-.query-composer { display: grid; grid-template-columns: minmax(0, 1fr) 64px; align-items: end; gap: 8px; }
-.query-composer textarea { min-height: 68px; max-height: 120px; }
-#ask-button { height: 40px; background: var(--accent); color: var(--paper); border-color: var(--accent); }
+.query-composer { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: end; gap: 8px; }
+.query-composer:has(#query-stop:not([hidden])) { grid-template-columns: minmax(0, 1fr) 44px 64px; }
+.query-composer textarea { min-height: 68px; height: 68px; max-height: 120px; resize: vertical; }
+#ask-button { width: 44px; height: 44px; padding: 0; font-size: 24px; background: var(--accent); color: var(--paper); border-color: var(--accent); }
 .query-filters { margin: 12px 0; font-size: 12px; }
 .query-filters > summary { color: var(--muted); cursor: pointer; width: fit-content; }
 .query-filter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; padding-top: 10px; }
@@ -117,11 +118,11 @@ pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
 .query-result-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 12px 0; margin-top: 4px; }
 #query-status { color: var(--muted); font: 10px/1.6 var(--mono); overflow-wrap: anywhere; }
 #query-export { font-size: 11px; }
-.query-result { flex: 1; min-height: 0; overflow: auto; padding: 0 4px 24px 0; scrollbar-gutter: stable; }
+.query-result { flex: 1; min-height: 100px; overflow: auto; padding: 0 8px 24px 0; scrollbar-gutter: stable; }
 .query-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .query-metrics dt { font-size: 10px; color: var(--muted); }
-.query-metrics dd { font: 600 22px/1.5 var(--mono); margin: 4px 0 0; font-variant-numeric: tabular-nums; }
-.query-answer { margin: 0 0 18px; max-height: none; font: 12px/1.8 'Avenir Next', 'Segoe UI', sans-serif; }
+.query-metrics dd { font: 600 15px/1.5 var(--mono); margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+.query-answer { margin: 0; max-height: none; font: 13px/1.85 'Avenir Next', 'Segoe UI', sans-serif; }
 .query-tools { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 12px 0 24px; font-size: 11px; }
 .query-tools th { color: var(--muted); font-weight: 500; }
 .query-tools th, .query-tools td { padding: 9px 6px; border-bottom: 1px solid var(--line); text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -140,6 +141,31 @@ pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
 .query-error { color: var(--error); font-size: 12px; padding: 8px 0; overflow-wrap: anywhere; }
 .query-model-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; margin: 8px 0 12px; }
 .query-model-control input { width: 14px; height: 14px; accent-color: var(--accent); }
+.log-turn { padding: 20px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.log-message { min-width: 0; }
+.log-user { padding: 0 0 18px 12px; border-left: 2px solid #6b89b4; }
+.log-assistant { padding-left: 12px; border-left: 2px solid #97b9ad; }
+.log-question { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+.answer-provenance, .answer-pending { color: var(--muted); font-size: 11px; margin: 10px 0 0; overflow-wrap: anywhere; }
+.query-evidence { margin-top: 12px; color: var(--muted); font-size: 11px; }
+.query-evidence > summary { cursor: pointer; padding: 4px 0; }
+.query-evidence > .query-source { color: var(--ink); }
+.query-evidence .query-source:first-of-type { margin-top: 10px; }
+.query-retry { margin-top: 10px; font-size: 11px; }
+.markdown { white-space: normal; overflow-wrap: anywhere; }
+.markdown p { margin: 0 0 12px; }
+.markdown p:last-child { margin-bottom: 0; }
+.markdown ul, .markdown ol { margin: 8px 0 14px; padding-left: 22px; }
+.markdown li { margin: 5px 0; }
+.markdown h3, .markdown h4 { font-size: 13px; margin: 16px 0 8px; font-weight: 650; }
+.markdown code { font: 11px/1.7 var(--mono); padding: 2px 4px; border-radius: 3px; background: #eef1f3; }
+.markdown pre { margin: 12px 0; padding: 10px 12px; border-left: 2px solid var(--line); background: var(--surface); }
+.markdown pre code { padding: 0; background: none; }
+.markdown a { color: var(--accent); text-underline-offset: 3px; }
+.markdown blockquote { margin: 12px 0; border-left: 2px solid var(--line); padding-left: 12px; color: var(--muted); }
+.markdown table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 12px 0; }
+.markdown th, .markdown td { padding: 7px; text-align: left; border-bottom: 1px solid var(--line); }
+.citation-link { font: 10px/1.7 var(--mono); white-space: nowrap; }
 @media (max-width: 1050px) {
 	.conversation, .log-panel { padding-left: 18px; padding-right: 18px; }
 	.activity-record > summary { grid-template-columns: 90px minmax(0, 1fr) 65px; gap: 8px; }
@@ -178,4 +204,8 @@ pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
 @media (prefers-reduced-motion: no-preference) {
 	.activity-entry { animation: arrive 150ms ease-out; }
 	@keyframes arrive { from { opacity: .6; } to { opacity: 1; } }
+}
+@media (max-height: 700px) and (min-width: 761px) {
+	.shell { height: auto; min-height: 100dvh; }
+	.workspace { min-height: 720px; }
 }

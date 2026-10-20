@@ -125,12 +125,17 @@ npm run cli -- ask "What tools were used?" --project default --format pretty
 npm run cli -- ask "How many times was read_file used?" --project default
 ```
 
-Tool counts use exact SQL aggregates, not a top-k prompt sample. Lexical FTS5
-retrieval returns bounded excerpts with source IDs, revisions, and capture
-warnings. Local answers need no AI account; model synthesis is an explicit,
-optional provider opt-in. In **Ask logs**, choose **Record sample** for a
-repeatable 122-tool-call demo. See the [demo and API guide](docs/log-retrieval.md)
-for scope, legacy-session coverage, privacy, and operational limits.
+**Ask logs** is a conversation grounded in captured requests, replies, files,
+tools, errors, timing, models, and reported usage. Ask for a summary, follow up
+with **What did it answer?**, or investigate a failure. Copilot explains retrieved
+evidence with inline citations; counts and source records are supporting details,
+not the primary view. Tool totals still come from exact SQL, not a prompt sample.
+
+The Copilot demo enables restricted, tool-disabled log answers; questions do not
+rerun the workspace agent. Local evidence-only mode remains available without an
+AI account. Choose **Record sample** for a repeatable 122-tool-call workload, or
+capture a real workspace review. See the [conversation and API guide](docs/log-retrieval.md)
+for provider consent, scope, legacy-session coverage, privacy, and limits.
 
 ## Privacy
 

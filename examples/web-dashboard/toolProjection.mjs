@@ -37,3 +37,29 @@ export function projectToolSpans(events, { projectId, parent }) {
 		})];
 	});
 }
+
+export function projectActivitySpans(log, { projectId, parent }) {
+	return log.entries.filter((entry) => entry.category !== 'tool').map((entry) => {
+		const clean = redactAttributes({
+			'source.projection': 'captured-session-activity',
+			'source.kind': entry.category === 'files' ? 'file.read' : ['request', 'response'].includes(entry.category) ? 'agent.message' : entry.category === 'usage' ? 'usage.reported' : entry.category,
+			'source.eventIds': entry.sources.slice(0, 128).map((source) => source.id),
+			'source.eventCount': entry.sources.length,
+			'activity.category': entry.category,
+			'activity.title': entry.title,
+			...(entry.category === 'request' ? { 'message.role': 'user' } : entry.category === 'response' ? { 'message.role': 'assistant' } : {}),
+			content: entry.details.map((detail) => ({ label: detail.label, text: detail.value })),
+			resources: entry.resources,
+		}, { mode: 'redacted-content', maxStringLength: 16_000 });
+		const limitations = ['Projected from captured activity, not an independent observation.', ...(entry.sources.length > 128 ? ['Source references were shortened; the original session retains the full list.'] : []), ...entry.warnings].slice(0, 32);
+		return TraceSpanSchema.parse({
+			schemaVersion: 1, projectId, traceId: parent.traceId, parentSpanId: parent.spanId,
+			spanId: createHash('sha256').update(`activity/${parent.traceId}/${entry.id}`).digest('hex').slice(0, 16),
+			name: entry.title.slice(0, 256), serviceName: 'copilot-activity-projection', kind: 'custom', revision: 1,
+			state: entry.status === 'failed' ? 'failed' : ['running', 'interrupted', 'unknown'].includes(entry.status) ? 'interrupted' : 'completed',
+			startedAt: entry.startedAt,
+			endedAt: new Date(Math.max(Date.parse(entry.startedAt), Date.parse(entry.endedAt ?? entry.startedAt))).toISOString(),
+			attributes: clean.attributes, events: [], links: [], capture: { ...clean.report, limitations },
+		});
+	});
+}

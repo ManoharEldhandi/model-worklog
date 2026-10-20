@@ -109,7 +109,7 @@ test('optional RAG generation sees redacted scoped evidence, validates citations
 	assert.equal(fallback.generation.status, 'fallback');
 	assert.doesNotMatch(fallback.answer, /S999/);
 	const exact = await ask({ question: 'How many times was validate_stock used?', synthesis: 'model' });
-	assert.equal(exact.generation.mode, 'extractive');
+	assert.equal(exact.generation.status, 'fallback');
 	assert.equal(exact.totals.toolCalls, 1);
-	assert.equal(calls, 2);
+	assert.equal(calls, 3);
 });

@@ -81,7 +81,7 @@ export class TraceApi {
 	async askLogs(input: unknown, signal?: AbortSignal): Promise<LogQueryResponse> {
 		const request = LogQueryRequestSchema.parse(input);
 		await this.authorize(request.projectId, 'read', signal);
-		const result = validated(LogQueryResponseSchema, await this.request('/v2/logs/query', signal, 'POST', request, 15_000));
+		const result = validated(LogQueryResponseSchema, await this.request('/v2/logs/query', signal, 'POST', request, 55_000));
 		if (result.scope.projectId !== request.projectId || result.scope.traceId !== request.traceId
 			|| result.evidence.some((source) => source.projectId !== request.projectId || (request.traceId !== undefined && source.traceId !== request.traceId))) { throw this.scopeError(); }
 		return result;

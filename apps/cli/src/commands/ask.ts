@@ -22,7 +22,7 @@ export async function askCommand(context: CommandContext, question: string, opti
 		writeLine(context.stderr, 'Usage: model-worklog ask "question" --project <id> [--trace <id>] [--tool <name>] [--since <ISO>] [--until <ISO>] [--intent <auto|tools|failures|search>] [--synthesis <extractive|model>] [--limit <1-20>]');
 		return ExitCode.InvalidInvocation;
 	}
-	const outcome = await requestSupervisor<unknown>(context, '/v2/logs/query', 'POST', parsed.data, 15_000);
+	const outcome = await requestSupervisor<unknown>(context, '/v2/logs/query', 'POST', parsed.data, 55_000);
 	if (outcome.kind === 'error') { writeLine(context.stderr, outcome.message); return ExitCode.Unavailable; }
 	const response = LogQueryResponseSchema.safeParse(outcome.data);
 	if (!response.success || response.data.scope.projectId !== parsed.data.projectId || response.data.scope.traceId !== parsed.data.traceId) {

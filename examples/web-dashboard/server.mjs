@@ -7,19 +7,23 @@ import { fileURLToPath } from 'node:url';
 
 import { createLocalModelLogger, LocalSupervisorClient } from 'model-worklog-sdk';
 import { buildSessionLog, buildTraceLog, LogQueryRequestSchema, parseSessionEvent, redactAttributes, redactSensitiveText, SpanIdSchema, TraceDetailSchema, TraceIdSchema } from 'model-worklog-schema';
-import { createTraceCredential, OpenAiLogAnswerGenerator, startSupervisor } from 'model-worklog-supervisor';
+import { CopilotLogAnswerGenerator, createTraceCredential, OpenAiLogAnswerGenerator, startSupervisor } from 'model-worklog-supervisor';
 
 import { captureSampleReview } from './sampleCapture.mjs';
-import { projectToolSpans } from './toolProjection.mjs';
+import { projectActivitySpans, projectToolSpans } from './toolProjection.mjs';
 
 const PROJECT_ID = 'web-demo';
 const MAX_MESSAGE_LENGTH = 2_000;
-const MAX_REQUEST_BYTES = 16_384;
+const MAX_REQUEST_BYTES = 128 * 1024;
 const SAMPLE_WORKSPACE_FILES = ['README.md', 'src/inventory.ts', 'src/pricing.ts'];
 const COPILOT_MAX_DURATION_MS = 120_000;
 const STATIC_FILES = new Map([
 	['/', { file: 'index.html', contentType: 'text/html; charset=utf-8' }],
 	['/app.js', { file: 'app.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/markdown.js', { file: 'markdown.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/logConversation.js', { file: 'logConversation.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/vendor/marked.js', { file: '../../../node_modules/marked/lib/marked.esm.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/vendor/purify.js', { file: '../../../node_modules/dompurify/dist/purify.es.mjs', contentType: 'text/javascript; charset=utf-8' }],
 	['/styles.css', { file: 'styles.css', contentType: 'text/css; charset=utf-8' }],
 	['/logo.png', { file: '../../../apps/vscode-extension/media/model-logger.png', contentType: 'image/png' }],
 ]);
@@ -46,6 +50,7 @@ function guardRequest(request) {
 }
 
 function sendJson(response, statusCode, body) {
+	if (response.destroyed || response.writableEnded) { return; }
 	const payload = responseBody(body);
 	response.writeHead(statusCode, {
 		'cache-control': 'no-store',
@@ -206,7 +211,7 @@ async function requestModel(message, provider) {
 	return providerResponse(await response.json(), provider);
 }
 
-async function supervisorRequest(collector, token, pathname, method, body) {
+async function supervisorRequest(collector, token, pathname, method, body, options = {}) {
 	const response = await fetch(new URL(pathname, collector.url), {
 		method,
 		headers: {
@@ -214,7 +219,7 @@ async function supervisorRequest(collector, token, pathname, method, body) {
 			...(body === undefined ? {} : { 'content-type': 'application/json' }),
 		},
 		...(body === undefined ? {} : { body: JSON.stringify(body) }),
-		signal: AbortSignal.timeout(10_000),
+		signal: AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? 10_000), ...(options.signal === undefined ? [] : [options.signal])]),
 	});
 	const payload = await response.json();
 	if (!response.ok) {
@@ -313,9 +318,9 @@ async function requestCopilotReview(run, context, recordTraceEvent, parent) {
 	const completed = await supervisorRequest(context.collector, context.collectorToken, `/v1/sessions/${encodeURIComponent(sessionId)}`, 'GET');
 	const session = value(completed, 'session');
 	const state = text(value(session, 'state'));
-	const tools = projectToolSpans(run.copilotEvents, { projectId: PROJECT_ID, parent });
-	for (let offset = 0; offset < tools.length; offset += 100) {
-		await supervisorRequest(context.collector, context.writerToken, '/v2/traces/batch', 'POST', { schemaVersion: 1, spans: tools.slice(offset, offset + 100) });
+	const projected = [...projectToolSpans(run.copilotEvents, { projectId: PROJECT_ID, parent }), ...projectActivitySpans(run.log, { projectId: PROJECT_ID, parent })];
+	for (let offset = 0; offset < projected.length; offset += 100) {
+		await supervisorRequest(context.collector, context.writerToken, '/v2/traces/batch', 'POST', { schemaVersion: 1, spans: projected.slice(offset, offset + 100) });
 	}
 	if (state !== 'completed') {
 		throw new Error(`Copilot session ended with state ${state ?? 'unknown'}. Run copilot login if authentication is required.`);
@@ -371,7 +376,7 @@ async function executeRun(run, context) {
 				input: { message: run.message },
 				kind: 'model',
 				name: 'model.chat.completions',
-				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, responseLength: reply.content.length }),
+				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, response: reply.content }),
 			}, async (modelSpan) => {
 				const reply = context.provider.kind === 'copilot'
 					? await requestCopilotReview(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context)
@@ -516,8 +521,9 @@ export async function startWebDashboard(options = {}) {
 		kind: providerKind,
 		model: options.model ?? (providerKind === 'openai-compatible' ? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini' : undefined),
 	};
-	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'openai-compatible' && provider.endpoint !== undefined
-		? new OpenAiLogAnswerGenerator({ endpoint: provider.endpoint, model: provider.model, apiKey: provider.apiKey }) : undefined);
+	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'copilot'
+		? new CopilotLogAnswerGenerator({ model: provider.model })
+		: provider.kind === 'openai-compatible' && provider.endpoint !== undefined ? new OpenAiLogAnswerGenerator({ endpoint: provider.endpoint, model: provider.model, apiKey: provider.apiKey }) : undefined);
 	const sampleWorkspacePath = await realpath(fileURLToPath(new URL('./sample-workspace', import.meta.url)));
 	const workspacePath = await mkdtemp(join(tmpdir(), 'model-worklog-dashboard-workspace-'));
 	await cp(sampleWorkspacePath, workspacePath, { recursive: true });
@@ -548,7 +554,12 @@ export async function startWebDashboard(options = {}) {
 				if (body === null || typeof body !== 'object' || Array.isArray(body) || (body.projectId !== undefined && body.projectId !== PROJECT_ID)) { throw new DashboardHttpError(400, 'Only the demo project can be queried.'); }
 				const parsed = LogQueryRequestSchema.safeParse({ ...body, projectId: PROJECT_ID });
 				if (!parsed.success) { throw new DashboardHttpError(400, 'Enter a question of 1-2000 characters and valid scope filters.'); }
-				sendJson(response, 200, await supervisorRequest(collector, reader.token, '/v2/logs/query', 'POST', parsed.data));
+				const cancellation = new AbortController();
+				const abort = () => cancellation.abort();
+				response.once('close', abort);
+				try {
+					sendJson(response, 200, await supervisorRequest(collector, reader.token, '/v2/logs/query', 'POST', parsed.data, { timeoutMs: 55_000, signal: cancellation.signal }));
+				} finally { response.removeListener('close', abort); }
 				return;
 			}
 			if (request.method === 'GET' && url.pathname === '/api/logs/evidence') {

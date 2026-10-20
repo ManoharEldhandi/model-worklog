@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+- Add conversational log answers with bounded follow-up context, broader request/response/file/usage retrieval, exact aggregate citations, and a restricted Copilot answer strategy.
+- Replace the web demo's analytics-only result panel with a Markdown conversation, per-turn evidence, cancellation, retry, scope reset, and chat export.
 - Add Ask Captured Logs to the Traces toolbar and command palette, with exact tool counts, local evidence retrieval, scoped authorization, cancellation, and citation snapshots.
 - Bundle transactional FTS5 retrieval and optional, explicitly requested model synthesis with redaction, bounded output, citation validation, and local fallback.
 

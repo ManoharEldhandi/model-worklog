@@ -9,7 +9,7 @@ export async function captureSampleReview({ endpoint, token, projectId, workspac
 	let traceId;
 	let delivery;
 	try {
-		await logger.trace({ name: 'inventory.sample-review', kind: 'agent' }, async (root) => {
+		await logger.trace({ name: 'inventory.sample-review', kind: 'agent', input: { message: 'Read the inventory sample, search quantity handling, and validate negative stock.' }, serializeResult: (result) => result }, async (root) => {
 			traceId = root.context.traceId;
 			const contents = [];
 			for (let index = 0; index < 120; index += 1) {
@@ -29,6 +29,7 @@ export async function captureSampleReview({ endpoint, token, projectId, workspac
 					throw new Error('Stock quantity must not be negative.');
 				});
 			} catch { onEvent('tool.completed', { tool: 'validate_stock', success: false, result: 'Stock quantity must not be negative.' }, randomUUID()); }
+			return { summary: 'Read the inventory files 120 times, searched quantity handling once, and recorded one handled validation failure for negative stock.' };
 		});
 	} finally { delivery = await logger.shutdown(); }
 	if (!delivery.success) { throw new Error('Sample trace delivery was incomplete.'); }

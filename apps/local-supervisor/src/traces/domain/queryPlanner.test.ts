@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { planLogQuery, queryTerms, requestedToolName } from './queryPlanner';
+import { conversationQuestion, planLogQuery, queryTerms, requestedToolName } from './queryPlanner';
 
 test('log query strategies distinguish exact analytics from evidence retrieval', () => {
 	assert.equal(planLogQuery('What tools were used here?').intent, 'tools');
@@ -33,4 +33,21 @@ test('query planning accepts an independent ecosystem strategy without mutating 
 	const strategy = Object.freeze({ intent: 'tools' as const, matches: (question: string): boolean => question.includes('operations') });
 	assert.equal(planLogQuery('list operations', [strategy]).intent, 'tools');
 	assert.equal(planLogQuery('find inventory', [strategy]).intent, 'search');
+});
+
+test('conversational retrieval distinguishes requests, replies, files, usage, and chronology', () => {
+	assert.equal(planLogQuery('What did the user ask?').focus, 'request');
+	assert.equal(planLogQuery('What did it answer?').focus, 'response');
+	assert.equal(planLogQuery('Which files were read?').focus, 'files');
+	assert.equal(planLogQuery('Which model was used and how many tokens?').focus, 'usage');
+	assert.equal(planLogQuery('What happened before the last action?').focus, 'timeline');
+	assert.equal(planLogQuery('Summarize this run and its tools').intent, 'search');
+	assert.equal(planLogQuery('What tools were used?').intent, 'tools');
+});
+
+test('follow-up retrieval expands only from bounded user context, never treats prior answers as evidence', () => {
+	const history = [{ role: 'user' as const, content: 'Tell me about inventory.ts' }, { role: 'assistant' as const, content: 'Unsupported prior assertion [S1]' }];
+	assert.match(conversationQuestion('Why was it read?', history), /inventory.ts/);
+	assert.doesNotMatch(conversationQuestion('Why was it read?', history), /Unsupported/);
+	assert.equal(conversationQuestion('Find pricing.ts', history), 'Find pricing.ts');
 });

@@ -78,19 +78,32 @@ not silently imported. Index maintenance shares the span transaction, including
 revisions, rollback, deletion, and retention. Query admission is separate from
 authentication and ingestion.
 
-No model is called by default. Optional synthesis requires an operator-configured
-provider and per-query opt-in. Only the question and bounded, redacted, authorized
-evidence are sent; a remote provider may retain that data under its own policies.
+The standalone query API defaults to local evidence-only mode. Optional synthesis
+requires an operator-configured provider and a model-enabled request. The Copilot
+browser demo explicitly configures that provider and enables **Copilot answers**;
+users can turn it off. The question, bounded recent conversation, redacted
+authorized evidence, and exact aggregates are sent; a provider may retain that
+data under its own policies.
 Redaction is not a guarantee that prose is non-sensitive. Do not opt in for data
 that must remain on the host. Configured endpoints require HTTPS or loopback HTTP
 and cannot redirect credentials. API keys remain in the operator environment.
 
-Retrieved text is untrusted data, never executed. Prompt instructions, strict
-bounded JSON output, and source-ID validation reduce generation risks but cannot
+The Copilot answer subprocess has no available tools, denies shell/write/URL
+permissions, disables built-in MCP/custom instructions and remote export, and
+runs in an isolated empty working directory. This is a restricted provider
+configuration, not an OS sandbox. The installed CLI and its local authentication
+remain trusted. Copilot may retain requests in its own private session state;
+the collector's no-history-storage behavior is not a provider retention promise.
+
+Retrieved text and previous answers are untrusted data, never executed. Bounded
+output and per-answer source-ID validation reduce generation risks but cannot
 prove that a model's claims follow from the evidence. Generated interpretations
 are labelled; timeout/provider/citation failures show the local evidence answer.
-Tool counts never depend on generation. Questions are not stored by the query
-layer. Review answer exports and editor buffers like other captured content.
+Tool aggregates never depend on generation, though an AI may explain them.
+Questions/history are not stored by the query layer. Browser history is bounded,
+memory-only, and cleared on scope changes; exports are explicit. Marked output
+is sanitized with DOMPurify before rendering, with scripts, images, active HTML,
+and unsafe links excluded. Review exports and editor buffers like other content.
 See [retrieval limits](log-retrieval.md) before deployment.
 
 ## Storage And Threat Limits

@@ -39,6 +39,8 @@
   },
   "devDependencies": {
     "@types/node": "24.x",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.1",
     "typescript": "^6.0.3"
   }
 }
