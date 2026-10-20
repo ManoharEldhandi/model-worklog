@@ -1,6 +1,6 @@
 import {
-	CreateTraceCredentialSchema, ProjectIdSchema, TraceDetailSchema, TraceIdSchema,
-	TraceListSchema, TracePrincipalSchema, type TracePrincipal,
+	CreateTraceCredentialSchema, LogQueryRequestSchema, LogQueryResponseSchema, ProjectIdSchema, TraceDetailSchema, TraceIdSchema,
+	TraceListSchema, TracePrincipalSchema, type LogQueryResponse, type TracePrincipal,
 } from 'model-worklog-schema';
 
 import { localToken } from './supervisorApi';
@@ -78,6 +78,15 @@ export class TraceApi {
 		this.requireAck(await this.request(this.path(`/v2/traces/${traceId}`, projectId), signal, 'DELETE'), 'deleted');
 	}
 
+	async askLogs(input: unknown, signal?: AbortSignal): Promise<LogQueryResponse> {
+		const request = LogQueryRequestSchema.parse(input);
+		await this.authorize(request.projectId, 'read', signal);
+		const result = validated(LogQueryResponseSchema, await this.request('/v2/logs/query', signal, 'POST', request, 15_000));
+		if (result.scope.projectId !== request.projectId || result.scope.traceId !== request.traceId
+			|| result.evidence.some((source) => source.projectId !== request.projectId || (request.traceId !== undefined && source.traceId !== request.traceId))) { throw this.scopeError(); }
+		return result;
+	}
+
 	async createWriter(projectId: string, signal?: AbortSignal): Promise<TraceCredential> {
 		await this.authorize(projectId, 'admin', signal);
 		const body = CreateTraceCredentialSchema.parse({ role: 'writer', projects: [projectId], ttlSeconds: 86_400 });
@@ -121,8 +130,8 @@ export class TraceApi {
 		}
 	}
 
-	private async request(path: string, cancellation?: AbortSignal, method = 'GET', body?: unknown): Promise<unknown> {
-		const signal = AbortSignal.any([AbortSignal.timeout(5_000), ...(cancellation === undefined ? [] : [cancellation])]);
+	private async request(path: string, cancellation?: AbortSignal, method = 'GET', body?: unknown, timeoutMs = 5_000): Promise<unknown> {
+		const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(cancellation === undefined ? [] : [cancellation])]);
 		let token: string;
 		try { token = (await this.credential()).trim(); }
 		catch { throw new TraceApiError('unauthorized', 'The local supervisor credential is unavailable. Enable or reconnect Model Logger.'); }
@@ -141,6 +150,7 @@ export class TraceApi {
 		}
 		if (!response.ok) {
 			await response.body?.cancel();
+			if (path === '/v2/logs/query' && response.status === 404) { throw new TraceApiError('unavailable', 'This supervisor does not support log queries. Restart with the matching Model Logger build, then reconnect. Existing logging is unchanged.'); }
 			throw new TraceApiError(response.status === 401 ? 'unauthorized' : response.status === 403 ? 'forbidden' : 'unavailable', `Trace service returned HTTP ${response.status}. Reconnect or check project permissions.`);
 		}
 		const reader = response.body?.getReader();

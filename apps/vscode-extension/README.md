@@ -37,6 +37,21 @@ Refresh manually or keep either trace view visible for five-second polling. Requ
 
 Readers and admins can export JSON. Export validates every returned page, rejects repeated cursors, and stops at 100 pages, 10,000 spans, 16 MiB of collected data, or 60 seconds. Failure does not save a partial export. Exports include capture-scope, missing-parent, and gap warnings, not connection credentials. Pagination is not a point-in-time snapshot. Admin-only deletion confirms both project and trace IDs; the backend reauthorizes every request.
 
+## Ask Captured Logs
+
+Run **Ask Captured Logs** from the Traces toolbar or command palette. Choose the
+current project or selected trace and ask a question such as **What tools were
+used?** or **How many times was read_file used?**. Exact counts cover all matching
+retained tool spans, not just visible sidebar pages or returned citations.
+
+Answers appear in **Model Logger Answers** with capture warnings and source
+IDs. The source picker opens a retrieved evidence snapshot in an untitled JSON
+editor, including its trace/span IDs and revision. This remains usable for older
+traces not loaded in the sidebar. Queries use reader/admin access, are cancelled
+on disconnect/project change, and do not change capture policy. The command uses
+local, evidence-based answers without an AI account or stored question history.
+Raw legacy Logs are not implicitly imported into the trace query corpus.
+
 ## Privacy And Coverage
 
 Supported agent hooks and instrumented applications only; coverage depends on integration. Enabling does not observe arbitrary chat or instrument applications automatically. Trace evidence is `model-declared`, not independent proof of execution. Provider-hidden reasoning is not collected. Redaction, truncation, drops, running spans, and uninstrumented work can leave gaps. Review exports before sharing.

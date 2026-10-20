@@ -216,6 +216,47 @@ test('logs renders a readable timeline and one canonical event per JSONL line', 
 	assert.deepEqual(lines.map((line) => line.kind), ['agent.summary', 'tool.called', 'usage.reported']);
 });
 
+test('ask validates scope and bounds before issuing a request', async () => {
+	let requests = 0;
+	const fetchImpl: FetchLike = async () => { requests += 1; throw new Error('unexpected request'); };
+	for (const args of [[], ['tools'], ['tools', '--project', '*'], ['tools', '--project', 'project', '--limit', '21'], ['tools', '--project', 'project', '--intent', 'sql']]) {
+		const result = await run(['ask', ...args], fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' });
+		assert.equal(result.code, ExitCode.InvalidInvocation);
+		assert.match(result.stderr, /Usage:/);
+	}
+	assert.equal(requests, 0);
+});
+
+test('ask sends scoped read requests and supports pretty, JSON, and JSONL answers', async () => {
+	const response = {
+		schemaVersion: 1, intent: 'tools', answer: 'Recorded 120 tool calls.', scope: { projectId: 'project' }, snapshotAt: '2026-10-20T00:00:00.000Z',
+		totals: { spans: 120, traces: 1, toolCalls: 120, failedSpans: 0, runningSpans: 0, metadataOnlySpans: 120, limitedSpans: 0 },
+		tools: [], evidence: [], retrieval: { strategy: 'exact-aggregate', matchedSpans: 120, returnedSpans: 0, truncated: true, toolsTruncated: false },
+		limitations: ['Only captured records are counted.'],
+	};
+	const fetchImpl: FetchLike = async (input, init) => {
+		assert.equal(new URL(input).pathname, '/v2/logs/query');
+		assert.equal(init?.method, 'POST');
+		assert.equal(init?.headers?.['x-model-worklog-token'], 'reader-token');
+		assert.equal(JSON.parse(init?.body ?? '{}').projectId, 'project');
+		return new Response(JSON.stringify(response));
+	};
+	const env = { MODEL_WORKLOG_TOKEN: 'reader-token' };
+	const pretty = await run(['ask', 'What tools were used?', '--project', 'project', '--format', 'pretty'], fetchImpl, env);
+	assert.equal(pretty.code, ExitCode.Ok);
+	assert.match(pretty.stdout, /120 tool calls/);
+	assert.match(pretty.stdout, /Only captured records/);
+	const json = await run(['ask', 'tools', '--project', 'project', '--format', 'json'], fetchImpl, env);
+	assert.equal(JSON.parse(json.stdout).result.totals.toolCalls, 120);
+	const jsonl = await run(['ask', 'tools', '--project', 'project', '--format', 'jsonl'], fetchImpl, env);
+	assert.equal(JSON.parse(jsonl.stdout).retrieval.strategy, 'exact-aggregate');
+	const invalid = await run(['ask', 'tools', '--project', 'project'], jsonFetch({ ...response, scope: { projectId: 'other' } }), env);
+	assert.equal(invalid.code, ExitCode.Internal);
+	const denied = await run(['ask', 'tools', '--project', 'project'], jsonFetch({ error: { message: 'Forbidden project.' } }, 403), env);
+	assert.equal(denied.code, ExitCode.Unavailable);
+	assert.match(denied.stderr, /Forbidden project/);
+});
+
 test('watch sends resumable filters and renders one committed event per JSONL line', async () => {
 	let query: URLSearchParams | undefined;
 	const apiFetch: FetchLike = async (input) => {

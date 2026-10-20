@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+- Add Ask Captured Logs to the Traces toolbar and command palette, with exact tool counts, local evidence retrieval, scoped authorization, cancellation, and citation snapshots.
+- Bundle transactional FTS5 retrieval and optional, explicitly requested model synthesis with redaction, bounded output, citation validation, and local fallback.
+
 ## 2.1.0 - 2026-10-19
 
 - Move readable logs into a shared semantic backend contract with ready-to-use SDK snapshots and text output.

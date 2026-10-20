@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 import { LOOPBACK_HOSTS, startSupervisor } from './server';
 import { DEFAULT_SUPERVISOR_PORT, SUPERVISOR_VERSION } from './version';
+import { OpenAiLogAnswerGenerator } from './traces/infrastructure/logAnswerGenerator';
+
+function configuredAnswerGenerator(): OpenAiLogAnswerGenerator | undefined {
+	const endpoint = process.env.MODEL_WORKLOG_RAG_URL;
+	const model = process.env.MODEL_WORKLOG_RAG_MODEL;
+	const apiKey = process.env.MODEL_WORKLOG_RAG_API_KEY;
+	if (endpoint === undefined && model === undefined && apiKey === undefined) { return undefined; }
+	if (endpoint === undefined || model === undefined) { throw new Error('Set both MODEL_WORKLOG_RAG_URL and MODEL_WORKLOG_RAG_MODEL to enable optional log answer synthesis.'); }
+	return new OpenAiLogAnswerGenerator({ endpoint, model, apiKey });
+}
 
 function resolvePort(raw: string | undefined): number {
 	if (raw === undefined || raw.trim() === '') {
@@ -28,6 +38,7 @@ async function main(): Promise<void> {
 		host: resolveHost(process.env.MODEL_WORKLOG_SUPERVISOR_HOST),
 		port,
 		shutdownWhenNoExtensionClients: process.env.MODEL_WORKLOG_SHUTDOWN_WHEN_IDLE === '1',
+		logAnswerGenerator: configuredAnswerGenerator(),
 	});
 	process.stderr.write(`model-worklog supervisor ${SUPERVISOR_VERSION} listening on ${running.url} (instance ${running.instanceId})\n`);
 

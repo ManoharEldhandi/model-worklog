@@ -32,7 +32,7 @@ export function buildHealthResponse(identity: SupervisorIdentity, overrides: Hea
 		startedAt: identity.startedAt,
 		capabilities: {
 			adapters: overrides.adapters ?? ['codex-app-server'],
-			features: overrides.features ?? ['health', 'sessions', 'event-log', 'semantic-session-logs', 'semantic-trace-logs', 'managed-process', 'workspace-trust', 'vscode-client-leases', 'integration-ingest', 'codex-app-server-relay', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'session-cancel', 'token-budget', 'duration-budget', 'redacted-evidence-bundle', 'cost-report', 'traces-v2', 'trace-scoped-credentials', 'otlp-http-traces-json', 'otlp-http-traces-protobuf'],
+			features: overrides.features ?? ['health', 'sessions', 'event-log', 'semantic-session-logs', 'semantic-trace-logs', 'managed-process', 'workspace-trust', 'vscode-client-leases', 'integration-ingest', 'codex-app-server-relay', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'session-cancel', 'token-budget', 'duration-budget', 'redacted-evidence-bundle', 'cost-report', 'traces-v2', 'trace-scoped-credentials', 'log-query-v1', 'otlp-http-traces-json', 'otlp-http-traces-protobuf'],
 		},
 	};
 }

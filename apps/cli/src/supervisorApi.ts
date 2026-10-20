@@ -60,6 +60,7 @@ export async function requestSupervisor<T>(
 	pathname: string,
 	method = 'GET',
 	body?: unknown,
+	timeoutMs = 5_000,
 ): Promise<ApiOutcome<T>> {
 	let base: URL;
 	try {
@@ -79,7 +80,7 @@ export async function requestSupervisor<T>(
 			method,
 			headers: { 'content-type': 'application/json', 'x-model-worklog-token': token },
 			...(body === undefined ? {} : { body: JSON.stringify(body) }),
-			signal: AbortSignal.timeout(5_000),
+			signal: AbortSignal.timeout(timeoutMs),
 		});
 	} catch (error) {
 		return { kind: 'error', message: error instanceof Error ? error.message : String(error) };

@@ -11,6 +11,7 @@ import type { CopilotRelayFactory } from './copilotRelay';
 import { defaultDataDirectory } from './state';
 import { SUPERVISOR_VERSION } from './version';
 import type { TraceStorageOptions } from './traces/domain/contracts';
+import type { LogAnswerGenerator } from './traces/domain/logQuery';
 import type { TraceRequestHandler } from './traces/http';
 import { prepareTraceDirectory } from './traces/infrastructure/files';
 import { openTraceRuntime, type TraceRuntime } from './traces/runtime';
@@ -36,6 +37,7 @@ export interface StartOptions {
 	readonly tracePrivacy?: PrivacyOptions;
 	readonly traceStorage?: TraceStorageOptions;
 	readonly traceProjectId?: string;
+	readonly logAnswerGenerator?: LogAnswerGenerator;
 }
 
 export interface RunningSupervisor {
@@ -164,7 +166,7 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 	let traces: TraceRuntime | undefined;
 
 	try {
-		traces = openTraceRuntime({ dataDirectory, adminToken: service.token, now: options.now, privacy: options.tracePrivacy, storage: options.traceStorage, projectId: options.traceProjectId });
+		traces = openTraceRuntime({ dataDirectory, adminToken: service.token, now: options.now, privacy: options.tracePrivacy, storage: options.traceStorage, projectId: options.traceProjectId, answerGenerator: options.logAnswerGenerator });
 		server = createServer({ maxHeaderSize: 8 * 1024 }, createRequestListener(health, service, traces.handler));
 		server.headersTimeout = 10_000;
 		server.requestTimeout = 15_000;

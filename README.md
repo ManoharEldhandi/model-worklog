@@ -115,12 +115,30 @@ projection. Structured activities retain source references for later search;
 the original captured records remain the evidence. See the
 [activity model](docs/evidence-model.md#readable-activity-projection).
 
+## Ask Captured Logs
+
+Use **Ask logs** in the web demo, **Ask Captured Logs** in the VS Code Traces
+view, or the CLI to query retained traces:
+
+```sh
+npm run cli -- ask "What tools were used?" --project default --format pretty
+npm run cli -- ask "How many times was read_file used?" --project default
+```
+
+Tool counts use exact SQL aggregates, not a top-k prompt sample. Lexical FTS5
+retrieval returns bounded excerpts with source IDs, revisions, and capture
+warnings. Local answers need no AI account; model synthesis is an explicit,
+optional provider opt-in. In **Ask logs**, choose **Record sample** for a
+repeatable 122-tool-call demo. See the [demo and API guide](docs/log-retrieval.md)
+for scope, legacy-session coverage, privacy, and operational limits.
+
 ## Privacy
 
 - Private local storage, metadata-first capture, and redaction before buffering and storage.
 - Expiring, revocable writer/reader credentials scoped to projects; admin-only management.
 - Bounded queues and storage; retries do not duplicate accepted span revisions.
-- No cloud logging account, upload, global monkey-patching, or hidden-reasoning capture.
+- No cloud logging account, automatic upload, global monkey-patching, or hidden-reasoning capture.
+- Optional answer synthesis sends only bounded redacted evidence to an explicitly configured model after per-query opt-in.
 
 Redaction is a safeguard, not a guarantee. Do not intentionally send
 credentials or confidential data to a log.

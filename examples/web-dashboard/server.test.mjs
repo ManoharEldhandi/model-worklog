@@ -101,6 +101,56 @@ test('dashboard groups native read lifecycles and retains MCP results and their 
 	assert.ok(mcp.details.some((detail) => detail.value === 'Inventory reference found'));
 	const exported = await fetch(new URL(`/api/runs/${runId}/download`, dashboard.url)).then((response) => response.json());
 	assert.ok(reads[0].sources.every((source) => exported.sourceEvents.some((event) => event.eventId === source.id)));
+	const answer = await fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'How many times was read_file used?', traceId: run.traceId }) }).then((response) => response.json());
+	assert.equal(answer.totals.toolCalls, 100);
+	assert.equal(answer.tools[0].name, 'read_file');
+	assert.equal(answer.evidence.length, 8);
+	assert.equal(answer.retrieval.truncated, true);
+	assert.ok(answer.evidence.every((source) => source.serviceName === 'copilot-tool-projection'));
+});
+
+test('sample capture supports exact tool answers, failure retrieval, and retained evidence without model credentials', async (testContext) => {
+	const dashboard = await startWebDashboard({ provider: 'offline-demo' });
+	testContext.after(async () => dashboard.close());
+	const started = await fetch(new URL('/api/logs/sample', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+	assert.equal(started.status, 202);
+	const run = await waitForRun(dashboard.url, (await started.json()).runId);
+	assert.equal(run.status, 'completed');
+	assert.equal(run.trace.spanCount, 123);
+	const query = async (question) => {
+		const response = await fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, traceId: run.traceId }) });
+		assert.equal(response.status, 200);
+		return response.json();
+	};
+	const tools = await query('What tools were used?');
+	assert.equal(tools.totals.toolCalls, 122);
+	assert.equal(tools.tools.find((tool) => tool.name === 'read_file').calls, 120);
+	const specific = await query('How many times was read_file used?');
+	assert.equal(specific.totals.toolCalls, 120);
+	const failures = await query('What failed?');
+	assert.equal(failures.retrieval.matchedSpans, 1);
+	assert.match(failures.answer, /Stock quantity must not be negative/);
+	const source = failures.evidence[0];
+	const evidence = await fetch(new URL(`/api/logs/evidence?traceId=${source.traceId}&spanId=${source.spanId}`, dashboard.url)).then((response) => response.json());
+	assert.equal(evidence.span.spanId, source.spanId);
+	assert.equal(evidence.span.revision, source.revision);
+	assert.equal(JSON.stringify(tools).includes('token'), false);
+});
+
+test('dashboard query proxy rejects foreign origins, malformed requests, and project override attempts', async (testContext) => {
+	const dashboard = await startWebDashboard({ provider: 'offline-demo' });
+	testContext.after(async () => dashboard.close());
+	const path = new URL('/api/logs/query', dashboard.url);
+	const post = (body, headers = {}) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body });
+	assert.equal((await post('{"question":"tools"}', { origin: 'https://untrusted.example' })).status, 403);
+	assert.equal((await post('{"question":"tools"}', { 'sec-fetch-site': 'cross-site' })).status, 403);
+	assert.equal((await post('{"question":"tools","projectId":"other"}')).status, 400);
+	assert.equal((await post('{"question":"tools","limit":1000}')).status, 400);
+	assert.equal((await post('{"question":"tools","__proto__":{}}')).status, 400);
+	assert.equal((await post('{malformed')).status, 400);
+	assert.equal((await post('{}', { 'content-type': 'text/plain' })).status, 400);
+	assert.equal((await post('x'.repeat(16385))).status, 413);
+	assert.equal((await fetch(new URL('/api/logs/evidence?traceId=bad&spanId=bad', dashboard.url))).status, 400);
 });
 
 test('dashboard presentation and JSON export redact prompt secrets without changing model input', async (testContext) => {

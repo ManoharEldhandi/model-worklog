@@ -8,3 +8,4 @@ export * from './activity';
 export * from './activityLog';
 export * from './trace';
 export * from './privacy';
+export * from './logQuery';

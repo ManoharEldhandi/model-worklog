@@ -132,6 +132,16 @@ export function createTraceHandler(api: TraceApi): TraceRequestHandler {
 			}
 			const body = method === 'POST' ? await jsonBody(request) : undefined;
 			request.resume();
+			if (selected.kind === 'log-query') {
+				const cancellation = new AbortController();
+				const abort = (): void => cancellation.abort();
+				response.once('close', abort);
+				try {
+					const result = await api.query(principal, url.searchParams, body, cancellation.signal);
+					respond(response, result.statusCode, result.body);
+				} finally { response.removeListener('close', abort); }
+				return;
+			}
 			const result = api.handle(selected, principal, url.searchParams, body);
 			respond(response, result.statusCode, result.body);
 		} catch (error) {

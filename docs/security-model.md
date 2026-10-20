@@ -23,7 +23,7 @@ Use Node.js >=22.13 for the repository and collector.
 | Role | Allowed operations |
 | --- | --- |
 | Writer | Submit SDK batches or OTLP spans for explicitly authorized projects. |
-| Reader | List and read traces for explicitly authorized projects. |
+| Reader | List/read traces and query retained trace logs for explicitly authorized projects. |
 | Admin | Issue/revoke credentials, delete traces, run retention, and read/write. |
 
 Keep the installation `auth-token` and `RunningSupervisor.authToken` in the
@@ -68,6 +68,30 @@ Collector intake is bounded to 100 spans/snapshots and 2 MiB per request.
 OTLP accepts HTTP JSON or protobuf, not compression or gRPC. Bounded SDK queues
 can drop telemetry; neither a successful application call nor a local spool
 guarantees complete or exactly-once evidence.
+
+## Log Retrieval And Optional Synthesis
+
+`POST /v2/logs/query` inherits trace authentication, explicit project scoping,
+loopback origin guards, and redaction. Writer credentials cannot query. Exact
+aggregates and bounded FTS5 excerpts use retained spans only; legacy sessions are
+not silently imported. Index maintenance shares the span transaction, including
+revisions, rollback, deletion, and retention. Query admission is separate from
+authentication and ingestion.
+
+No model is called by default. Optional synthesis requires an operator-configured
+provider and per-query opt-in. Only the question and bounded, redacted, authorized
+evidence are sent; a remote provider may retain that data under its own policies.
+Redaction is not a guarantee that prose is non-sensitive. Do not opt in for data
+that must remain on the host. Configured endpoints require HTTPS or loopback HTTP
+and cannot redirect credentials. API keys remain in the operator environment.
+
+Retrieved text is untrusted data, never executed. Prompt instructions, strict
+bounded JSON output, and source-ID validation reduce generation risks but cannot
+prove that a model's claims follow from the evidence. Generated interpretations
+are labelled; timeout/provider/citation failures show the local evidence answer.
+Tool counts never depend on generation. Questions are not stored by the query
+layer. Review answer exports and editor buffers like other captured content.
+See [retrieval limits](log-retrieval.md) before deployment.
 
 ## Storage And Threat Limits
 

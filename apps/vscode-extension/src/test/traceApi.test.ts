@@ -6,6 +6,34 @@ const principal = { id: 'reader-test', role: 'reader' as const, projects: ['app'
 const response = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status });
 
 suite('Trace API', () => {
+	test('asks scoped log questions only after authorization and rejects out-of-scope evidence', async () => {
+		const answer = { schemaVersion: 1, intent: 'tools', answer: 'No tool calls were captured.', scope: { projectId: 'app' }, snapshotAt: '2026-10-20T00:00:00.000Z',
+			totals: { spans: 0, traces: 0, toolCalls: 0, failedSpans: 0, runningSpans: 0, metadataOnlySpans: 0, limitedSpans: 0 }, tools: [], evidence: [],
+			retrieval: { strategy: 'exact-aggregate', matchedSpans: 0, returnedSpans: 0, truncated: false, toolsTruncated: false }, limitations: [] };
+		let requests = 0;
+		let wrongScope = false;
+		const api = new TraceApi(origin, async () => 'test-token', async (url, init) => {
+			if (url.pathname === '/v2/identity') { return response(principal); }
+			requests += 1;
+			assert.strictEqual(url.pathname, '/v2/logs/query');
+			assert.strictEqual(init.method, 'POST');
+			assert.strictEqual(JSON.parse(String(init.body)).projectId, 'app');
+			return response(wrongScope ? { ...answer, scope: { projectId: 'other' } } : answer);
+		});
+		assert.strictEqual((await api.askLogs({ projectId: 'app', question: 'tools' })).totals.toolCalls, 0);
+		wrongScope = true;
+		await assert.rejects(api.askLogs({ projectId: 'app', question: 'tools' }), /outside the requested/);
+		await assert.rejects(api.askLogs({ projectId: 'other', question: 'tools' }), /reader or admin/);
+		assert.strictEqual(requests, 2);
+		await assert.rejects(api.askLogs({ projectId: 'app', question: 'tools', limit: 100 }));
+		assert.strictEqual(requests, 2);
+	});
+
+	test('an older collector reports query compatibility without trusting its error body', async () => {
+		const api = new TraceApi(origin, async () => 'test-token', async (url) => url.pathname === '/v2/identity' ? response(principal) : response({ error: 'never-display-remote-error' }, 404));
+		await assert.rejects(api.askLogs({ projectId: 'app', question: 'tools' }), (error: unknown) => error instanceof TraceApiError && /matching Model Logger build/.test(error.message) && !error.message.includes('never-display'));
+	});
+
 	test('requires a direct schema-validated identity, not an envelope or an assumed admin', async () => {
 		const api = new TraceApi(origin, async () => 'test-token', async () => response(principal));
 		assert.deepStrictEqual(await api.identity(), principal);

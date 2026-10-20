@@ -15,11 +15,26 @@ const followLog = document.querySelector('#follow-log');
 const activityCount = document.querySelector('#activity-count');
 const captureSummary = document.querySelector('#capture-summary');
 const runDate = document.querySelector('#run-date');
+const queryPanel = document.querySelector('#query-panel');
+const queryForm = document.querySelector('#query-form');
+const questionInput = document.querySelector('#question');
+const queryScope = document.querySelector('#query-scope');
+const queryTool = document.querySelector('#query-tool');
+const queryIntent = document.querySelector('#query-intent');
+const queryResult = document.querySelector('#query-result');
+const queryStatus = document.querySelector('#query-status');
+const queryError = document.querySelector('#query-error');
+const askButton = document.querySelector('#ask-button');
+const sampleButton = document.querySelector('#sample-button');
+const queryExport = document.querySelector('#query-export');
 
 let activeRun;
 let pollTimer;
 let currentRun;
 let selectedView = 'activity';
+let latestAnswer;
+let queryRequestId = 0;
+let pendingSampleQuery = false;
 const expanded = new Set();
 const rows = new Map();
 const VIEW_LIMIT = 500;
@@ -53,11 +68,12 @@ function addMessage(role, text) {
 
 function setRunning(running) {
 	sendButton.disabled = running;
+	sampleButton.disabled = running;
 	input.disabled = running;
 	if (running) {
 		setDownload({ downloadReady: false });
 	}
-	if (!running) {
+	if (!running && selectedView !== 'query') {
 		input.focus();
 	}
 }
@@ -155,6 +171,7 @@ function matches(entry) {
 }
 
 function renderTimeline() {
+	if (selectedView === 'query') { return; }
 	const entries = selectedView === 'spans' ? currentRun?.trace?.activity ?? [] : currentRun?.activity?.entries ?? [];
 	const filtered = entries.filter(matches);
 	const visible = filtered.slice(-VIEW_LIMIT);
@@ -177,6 +194,7 @@ function renderTimeline() {
 
 function renderRun(run) {
 	currentRun = run;
+	queryScope.querySelector('[value="latest"]').disabled = run.traceId === undefined;
 	renderTimeline();
 	setDownload(run);
 	runState.textContent = run.status;
@@ -224,7 +242,15 @@ async function updateRun() {
 		setRunning(false);
 		if (run.status === 'completed') {
 			addMessage('assistant', run.response);
+			if (pendingSampleQuery) {
+				pendingSampleQuery = false;
+				queryTool.value = '';
+				queryIntent.value = 'auto';
+				questionInput.value = 'What tools were used?';
+				queryForm.requestSubmit();
+			}
 		} else {
+			pendingSampleQuery = false;
 			addMessage('assistant', `The run stopped: ${run.error ?? 'Unknown error'}`);
 		}
 	} catch (error) {
@@ -275,9 +301,157 @@ form.addEventListener('submit', async (event) => {
 search.addEventListener('input', renderTimeline);
 filter.addEventListener('change', renderTimeline);
 document.querySelectorAll('input[name="log-view"]').forEach((control) => {
-	control.addEventListener('change', () => { selectedView = control.value; renderTimeline(); });
+	control.addEventListener('change', () => {
+		selectedView = control.value;
+		const querying = selectedView === 'query';
+		queryPanel.hidden = !querying;
+		for (const target of ['.log-filters', '.log-caption', '#timeline', '.log-footer', '.follow-control']) { document.querySelector(target).hidden = querying; }
+		if (querying) { questionInput.focus(); } else { renderTimeline(); }
+	});
 });
 followLog.addEventListener('change', () => { if (followLog.checked) { timeline.scrollTop = timeline.scrollHeight; } });
+
+function renderToolCounts(tools) {
+	const table = element('table', 'query-tools');
+	const heading = element('tr');
+	for (const title of ['Tool', 'Calls', 'Failed', 'Running']) { heading.append(element('th', undefined, title)); }
+	const head = element('thead');
+	head.append(heading);
+	const body = element('tbody');
+	for (const tool of tools) {
+		const row = element('tr');
+		const name = element('td');
+		const button = element('button', 'query-tool-name', tool.name);
+		button.type = 'button';
+		button.title = `Query usage of ${tool.name}`;
+		button.addEventListener('click', () => { queryTool.value = tool.name; questionInput.value = `How many times was ${tool.name} used?`; queryIntent.value = 'tools'; queryForm.requestSubmit(); });
+		name.append(button);
+		row.append(name, element('td', undefined, String(tool.calls)), element('td', undefined, String(tool.failed)), element('td', undefined, String(tool.running)));
+		body.append(row);
+	}
+	table.append(head, body);
+	return table;
+}
+
+function renderEvidence(source) {
+	const details = element('details', 'query-source');
+	details.append(element('summary', undefined, `[${source.id}] ${source.name} / ${source.state}`));
+	const content = element('div', 'query-source-content');
+	content.append(element('p', 'query-source-meta', `${source.startedAt} | ${source.serviceName} | revision ${source.revision}`));
+	content.append(element('pre', undefined, source.excerpt));
+	const open = element('button', 'query-open-source', 'Open source');
+	open.type = 'button';
+	open.title = 'Read the retained span behind this citation';
+	open.addEventListener('click', async () => {
+		open.disabled = true;
+		try {
+			const params = new URLSearchParams({ traceId: source.traceId, spanId: source.spanId });
+			const response = await fetch(`/api/logs/evidence?${params}`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+			const payload = await response.json();
+			if (!response.ok) { throw new Error(payload?.error?.message ?? 'Evidence is unavailable.'); }
+			if (payload.span.revision !== source.revision) { content.append(element('p', 'capture-warning', `The retained span has advanced to revision ${payload.span.revision}. The excerpt above is the query snapshot at revision ${source.revision}.`)); }
+			content.append(element('pre', 'query-source-record', JSON.stringify(payload, null, 2)));
+			open.remove();
+		} catch (error) {
+			content.append(element('p', 'query-error', error instanceof Error ? error.message : 'Evidence is unavailable.'));
+			open.disabled = false;
+		}
+	});
+	content.append(open);
+	details.append(content);
+	return details;
+}
+
+function renderAnswer(answer) {
+	const fragment = document.createDocumentFragment();
+	const metrics = element('dl', 'query-metrics');
+	for (const [label, value] of [['Tool calls', answer.totals.toolCalls], ['Failed spans', answer.totals.failedSpans], ['Scoped spans', answer.totals.spans], ['Citations', answer.evidence.length]]) {
+		const item = element('div');
+		item.append(element('dt', undefined, label), element('dd', undefined, String(value)));
+		metrics.append(item);
+	}
+	fragment.append(metrics, element('pre', 'query-answer', answer.answer));
+	if (answer.tools.length > 0) { fragment.append(renderToolCounts(answer.tools)); }
+	if (answer.evidence.length > 0) {
+		fragment.append(element('h3', 'query-section-title', 'Sources'));
+		for (const source of answer.evidence) { fragment.append(renderEvidence(source)); }
+	}
+	const limitations = element('details', 'query-limitations');
+	limitations.append(element('summary', undefined, `Coverage notes (${answer.limitations.length})`));
+	for (const limitation of answer.limitations) { limitations.append(element('p', undefined, limitation)); }
+	fragment.append(limitations);
+	queryResult.replaceChildren(fragment);
+	queryStatus.textContent = `${answer.retrieval.matchedSpans} matches | ${answer.generation.status === 'generated' ? 'Model interpretation' : answer.retrieval.strategy} | ${answer.snapshotAt.slice(11, 19)} UTC`;
+}
+
+queryForm.addEventListener('submit', async (event) => {
+	event.preventDefault();
+	const question = questionInput.value.trim();
+	if (question === '') { return; }
+	const requestId = ++queryRequestId;
+	askButton.disabled = true;
+	queryExport.disabled = true;
+	latestAnswer = undefined;
+	queryResult.replaceChildren();
+	queryError.hidden = true;
+	queryStatus.textContent = 'Querying retained logs...';
+	const body = { question, intent: queryIntent.value, synthesis: document.querySelector('#query-model').checked ? 'model' : 'extractive' };
+	if (queryScope.value === 'latest' && currentRun?.traceId !== undefined) { body.traceId = currentRun.traceId; }
+	if (queryTool.value.trim() !== '') { body.toolName = queryTool.value.trim(); }
+	try {
+		for (const field of ['since', 'until']) {
+			const value = document.querySelector(`#query-${field}`).value;
+			if (value !== '') { body[field] = new Date(value).toISOString(); }
+		}
+		const response = await fetch('/api/logs/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+		const payload = await response.json();
+		if (requestId !== queryRequestId) { return; }
+		if (!response.ok) { throw new Error(payload?.error?.message ?? 'The log query failed.'); }
+		latestAnswer = payload;
+		renderAnswer(payload);
+		queryExport.disabled = false;
+	} catch (error) {
+		if (requestId !== queryRequestId) { return; }
+		queryError.textContent = error instanceof Error ? error.message : 'The log query failed.';
+		queryError.hidden = false;
+		queryStatus.textContent = 'Query failed';
+	} finally { if (requestId === queryRequestId) { askButton.disabled = false; } }
+});
+
+sampleButton.addEventListener('click', async () => {
+	if (activeRun !== undefined) { return; }
+	setRunning(true);
+	queryError.hidden = true;
+	queryStatus.textContent = 'Recording sample capture...';
+	try {
+		const response = await fetch('/api/logs/sample', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(15_000) });
+		const payload = await response.json();
+		if (!response.ok) { throw new Error(payload?.error?.message ?? 'Sample capture failed.'); }
+		activeRun = payload.runId;
+		pendingSampleQuery = true;
+		addMessage('user', 'Record inventory sample capture');
+		queryScope.querySelector('[value="latest"]').disabled = false;
+		queryScope.value = 'latest';
+		void updateRun();
+	} catch (error) {
+		setRunning(false);
+		queryError.textContent = error instanceof Error ? error.message : 'Sample capture failed.';
+		queryError.hidden = false;
+		queryStatus.textContent = 'Sample capture failed';
+	}
+});
+
+queryExport.addEventListener('click', () => {
+	if (latestAnswer === undefined) { return; }
+	const url = URL.createObjectURL(new Blob([JSON.stringify(latestAnswer, null, 2)], { type: 'application/json' }));
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = 'model-worklog-answer.json';
+	document.body.append(link);
+	link.click();
+	link.remove();
+	window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+});
 
 async function loadConfig() {
 	try {
@@ -286,6 +460,7 @@ async function loadConfig() {
 			throw new Error('Configuration unavailable');
 		}
 		const config = await response.json();
+		document.querySelector('#query-model-control').hidden = !config.modelSynthesis;
 		providerMode.textContent = config.mode === 'copilot' ? 'GitHub Copilot' : config.mode === 'openai-compatible' ? 'Live provider' : 'Offline demo';
 		connectionStatus.textContent = `${config.provider} / Local collector`;
 		workspaceContext.textContent = `${config.workspace.label}: ${config.workspace.files.join(', ')}`;
