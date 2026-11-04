@@ -16,6 +16,14 @@ async function waitForRun(baseUrl, runId) {
 	throw new Error('Dashboard run did not complete in time.');
 }
 
+test('unavailable semantic services return an actionable error without exposing upstream content', async (context) => {
+	const dashboard = await startWebDashboard({ provider: 'offline-demo', rag: { async sync() { throw new Error('private-upstream-token'); } } });
+	context.after(() => dashboard.close());
+	const response = await fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'What happened?' }) });
+	assert.equal(response.status, 503);
+	const payload = await response.text(); assert.match(payload, /Restart the RAG demo/); assert.doesNotMatch(payload, /private-upstream-token/);
+});
+
 test('web dashboard records a browser interaction as nested SDK spans', async (testContext) => {
 	const dashboard = await startWebDashboard({ provider: 'offline-demo' });
 	testContext.after(async () => dashboard.close());

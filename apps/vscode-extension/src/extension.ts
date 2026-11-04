@@ -16,7 +16,7 @@ import { INTEGRATION_SCOPE } from './tracePrivacy';
 const SESSION_REFRESH_INTERVAL_MS = 1_000;
 const SELECTED_LOG_REFRESH_INTERVAL_MS = 150;
 const EXTENSION_CLIENT_HEARTBEAT_INTERVAL_MS = 10_000;
-const REQUIRED_SUPERVISOR_FEATURES = ['vscode-client-leases', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'semantic-session-logs'];
+const REQUIRED_SUPERVISOR_FEATURES = ['cli-executable-discovery', 'vscode-client-leases', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'semantic-session-logs'];
 
 interface ActiveLogFollower {
 	readonly sessionId: string;
@@ -40,7 +40,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		treeDataProvider: sessionView,
 		showCollapseAll: true,
 	});
-	const supervisorRuntime = new SupervisorRuntime({ extensionPath: context.extensionPath });
+	const supervisorRuntime = new SupervisorRuntime({ extensionPath: context.extensionPath, environment: cliEnvironment });
 	const followerState: LogFollowerState = { active: undefined };
 	const extensionClientState: ExtensionClientState = { clientId: `vscode_${randomUUID()}`, registered: false };
 	let refreshInFlight = false;
@@ -158,6 +158,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			try {
 				const session = await startCodexSession(url, workspacePath, task, {
+					model: vscode.workspace.getConfiguration('model-worklog').inspect<string>('codex.model')?.globalValue?.trim() || undefined,
 					maxDurationMs: configuredCodexDurationMinutes() * 60 * 1_000,
 					maxTokens: configuredCodexTokenBudget(),
 				});
@@ -227,6 +228,7 @@ export function activate(context: vscode.ExtensionContext): void {
 					shellPath: process.execPath,
 					shellArgs: [join(context.extensionPath, 'dist', 'copilot-interactive-bridge.js'), vendorSessionId],
 					env: {
+						...cliEnvironment(),
 						ELECTRON_RUN_AS_NODE: '1',
 						MODEL_WORKLOG_SUPERVISOR_URL: url.toString(),
 						...(process.env.MODEL_WORKLOG_HOME === undefined ? {} : { MODEL_WORKLOG_HOME: process.env.MODEL_WORKLOG_HOME }),
@@ -426,6 +428,17 @@ async function enableLogger(runtime: SupervisorRuntime, sessionView: SidebarLogV
 		vscode.window.showWarningMessage(`Could not enable Logger: ${detail}`);
 		return false;
 	}
+}
+
+function cliEnvironment(): NodeJS.ProcessEnv {
+	const environment = { ...process.env };
+	const configuration = vscode.workspace.getConfiguration('model-worklog');
+	for (const [setting, variable] of [['codex.path', 'MODEL_WORKLOG_CODEX_PATH'], ['copilot.path', 'MODEL_WORKLOG_COPILOT_PATH'], ['node.path', 'MODEL_WORKLOG_NODE_PATH']] as const) {
+		// Executable configuration belongs to the user/machine, never a repository setting.
+		const inspected = configuration.inspect<string>(setting); const value = inspected?.globalValue?.trim();
+		if (value) { environment[variable] = value; }
+	}
+	return environment;
 }
 
 function configuredSupervisorUrl(announce = true): URL | undefined {

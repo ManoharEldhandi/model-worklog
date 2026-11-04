@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { spawnAgentCli } from 'model-worklog-sdk';
+import { redactSensitiveText } from 'model-worklog-schema';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -100,7 +101,7 @@ async function run(): Promise<void> {
 	process.on('SIGTERM', () => { interrupted = true; });
 	try {
 		const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-			const child = spawn('copilot', ['--session-id', sessionId], {
+			const child = spawnAgentCli('copilot', ['--session-id', sessionId], {
 				cwd: process.cwd(),
 				env: {
 					...process.env,
@@ -122,6 +123,7 @@ async function run(): Promise<void> {
 	}
 }
 
-void run().catch(() => {
+void run().catch((error: unknown) => {
+	process.stderr.write(`Interactive Copilot could not start: ${redactSensitiveText(error instanceof Error ? error.message : 'Unknown launch error.').slice(0, 2000)}\n`);
 	process.exitCode = 1;
 });

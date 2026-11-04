@@ -8,13 +8,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createInterface } from 'node:readline/promises';
 import { appendLogHistory } from 'model-worklog-schema';
 import { ChromaLogVectorStore, HttpLogRagReranker, LogRag, OpenAiLogEmbedder } from 'model-worklog-sdk/rag';
+import { resolveAgentCli } from 'model-worklog-sdk';
+import { startWebDashboard } from '../examples/web-dashboard/server.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const python = process.env.MODEL_WORKLOG_RAG_PYTHON ?? join(root, '.venv-rag/bin/python');
 const cache = process.env.MODEL_WORKLOG_MODEL_CACHE ?? join(homedir(), '.cache/model-worklog/models');
 const temporary = await mkdtemp(join(tmpdir(), 'model-worklog-rag-demo-'));
 const cancellation = new AbortController(); const { signal } = cancellation;
-const children = []; const logs = new Map(); let stopping = false;
+const children = []; const logs = new Map(); let stopping = false; let dashboard;
 const interrupt = () => cancellation.abort(new DOMException('Demo stopped.', 'AbortError'));
 process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
 
@@ -85,14 +87,34 @@ try {
 	await ready(`http://127.0.0.1:${modelPort}/health`);
 	const env = { MODEL_WORKLOG_CHROMA_URL: `http://127.0.0.1:${chromaPort}`, MODEL_WORKLOG_EMBEDDING_URL: `http://127.0.0.1:${modelPort}/v1/embeddings`, MODEL_WORKLOG_RERANK_URL: `http://127.0.0.1:${modelPort}/v1/rerank` };
 	console.log(`Chroma: ${env.MODEL_WORKLOG_CHROMA_URL}\nEmbeddings: ${env.MODEL_WORKLOG_EMBEDDING_URL}`);
-	console.log('\nRecording a refund failure through the SDK and retrieving a cited answer:\n');
-	await recordSample(env);
-	if (process.argv[2] !== '--no-chat' && process.stdin.isTTY && process.stdout.isTTY) { await chat(env); }
+	if (['--cli', '--no-chat'].includes(process.argv[2])) {
+		console.log('\nRecording a refund failure through the SDK and retrieving a cited answer:\n');
+		await recordSample(env);
+		if (process.argv[2] === '--cli' && process.stdin.isTTY && process.stdout.isTTY) { await chat(env); }
+	} else {
+		let provider = process.env.MODEL_WORKLOG_DEMO_PROVIDER ?? 'copilot';
+		if (provider === 'copilot') {
+			try { resolveAgentCli('copilot'); }
+			catch (error) { if (process.env.MODEL_WORKLOG_DEMO_PROVIDER) { throw error; } provider = 'offline-demo'; console.log('Copilot CLI is unavailable. Local search and evidence summaries remain available.'); }
+		}
+		dashboard = await startWebDashboard({ provider, ragOptions: {
+			store: new ChromaLogVectorStore({ url: env.MODEL_WORKLOG_CHROMA_URL, collection: 'browser-log-demo' }),
+			embedder: new OpenAiLogEmbedder({ endpoint: env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
+			reranker: new HttpLogRagReranker(env.MODEL_WORKLOG_RERANK_URL),
+		} });
+		console.log(`\nModel Logger RAG demo: ${dashboard.url}\nChoose a sample and click Record sample, or capture a workspace review.\nPress Ctrl+C to stop.\n`);
+		if (process.argv[2] !== '--no-open') {
+			const command = process.platform === 'darwin' ? 'open' : process.env.DISPLAY || process.env.WAYLAND_DISPLAY ? 'xdg-open' : undefined;
+			if (command) { const opener = spawn(command, [dashboard.url], { stdio: 'ignore' }); opener.on('error', () => {}); }
+		}
+		await new Promise((_resolve, reject) => { const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) { abort(); } });
+	}
 } catch (error) {
 	if (signal.reason?.name !== 'AbortError') { console.error(signal.aborted ? signal.reason.message : error.message); }
 	process.exitCode = signal.reason?.name === 'AbortError' ? 130 : 1;
 } finally {
 	stopping = true;
+	await dashboard?.close();
 	await Promise.all(children.map(async (child) => {
 		if (child.exitCode !== null || child.signalCode !== null || child.startupError) { return; }
 		await new Promise((resolve) => {

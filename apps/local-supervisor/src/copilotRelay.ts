@@ -1,10 +1,10 @@
-import { spawn, type SpawnOptions } from 'node:child_process';
+import { type SpawnOptions } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 
-import { CopilotCliAdapter } from 'model-worklog-sdk';
+import { CopilotCliAdapter, spawnAgentCli } from 'model-worklog-sdk';
 import type { JsonObject, SessionState, TokenUsage } from 'model-worklog-schema';
 
 import type { EventDraft } from './ledger';
@@ -79,7 +79,7 @@ function terminalState(exitCode: unknown, interrupted: boolean): Extract<Session
 }
 
 function nativeSpawn(command: string, argumentsValue: readonly string[], options: SpawnOptions): CopilotChild {
-	return spawn(command, argumentsValue, options) as unknown as CopilotChild;
+	return spawnAgentCli('copilot', argumentsValue, options) as unknown as CopilotChild;
 }
 
 export function copilotTelemetryUsage(content: string, fallbackModel?: string): readonly TokenUsage[] {

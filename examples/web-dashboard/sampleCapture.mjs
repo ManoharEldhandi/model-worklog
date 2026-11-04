@@ -35,3 +35,23 @@ export async function captureSampleReview({ endpoint, token, projectId, workspac
 	if (!delivery.success) { throw new Error('Sample trace delivery was incomplete.'); }
 	return { traceId, delivery: delivery.success, toolCalls: 122 };
 }
+
+export async function captureRefundReview({ endpoint, token, projectId, onEvent }) {
+	const logger = await createLocalModelLogger({ endpoint, token, projectId, serviceName: 'refund-sample', privacy: { mode: 'redacted-content' } });
+	let traceId; let delivery;
+	try {
+		await logger.trace({ name: 'payment.review', kind: 'agent', input: { message: 'Investigate why a refund was rejected.' }, serializeResult: (result) => result }, async (root) => {
+			traceId = root.context.traceId;
+			try {
+				await logger.trace({ name: 'payment.refund', kind: 'tool', input: { paymentAgeDays: 190 } }, (span) => {
+					span.captureOutput({ code: 'REFUND_WINDOW_EXPIRED', message: 'The refund was rejected because the original card payment settled 190 days ago. Refunds are allowed only within 180 days.' });
+					onEvent('tool.completed', { tool: 'payment.refund', success: false, result: 'Refund window expired.' }, randomUUID());
+					throw new Error('Refund window expired.');
+				});
+			} catch { /* The application handles the recorded failure. */ }
+			return { summary: 'The refund failed because the payment was 190 days old, beyond the 180-day refund window. No refund amount was captured.' };
+		});
+	} finally { delivery = await logger.shutdown(); }
+	if (!delivery.success) { throw new Error('Sample trace delivery was incomplete.'); }
+	return { traceId, delivery: true, toolCalls: 1 };
+}

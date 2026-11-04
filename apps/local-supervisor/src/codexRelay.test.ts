@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 
 import type { EventDraft } from './ledger';
-import { CodexAppServerRelay, type CodexChild } from './codexRelay';
+import { CodexAppServerRelay, resolveCodexCommand, type CodexChild } from './codexRelay';
 
 class FakeCodexChild implements CodexChild {
 	readonly stdin = new PassThrough();
@@ -78,6 +78,21 @@ function relay(child: FakeCodexChild, sink: RecordingSink): CodexAppServerRelay 
 		sessionId: 'ses_codex', workspacePath: '/workspace', task: 'Fix the failing test.', maxDurationMs: 60_000, maxTokens: 10,
 	}, { spawnCodex: () => child });
 }
+
+test('resolves Homebrew Codex when a macOS GUI PATH omits it', () => {
+	const checked: string[] = [];
+	const command = resolveCodexCommand({ PATH: '/usr/bin:/bin' }, 'darwin', (path) => {
+		checked.push(path);
+		return path === '/opt/homebrew/bin/codex';
+	});
+	assert.equal(command, '/opt/homebrew/bin/codex');
+	assert.deepEqual(checked, ['/usr/bin/codex', '/bin/codex', '/opt/homebrew/bin/codex']);
+});
+
+test('prefers the Codex executable already present on PATH', () => {
+	const command = resolveCodexCommand({ PATH: '/custom/bin:/usr/bin' }, 'darwin', (path) => path === '/custom/bin/codex');
+	assert.equal(command, '/custom/bin/codex');
+});
 
 test('runs a Codex App Server turn, retains visible evidence, and stops on a usage budget', async () => {
 	const child = new FakeCodexChild();

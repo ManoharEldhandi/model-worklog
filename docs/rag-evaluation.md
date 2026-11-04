@@ -62,6 +62,10 @@ Install the Python environment in the [SDK guide](sdk-rag.md), then run:
 npm run test:rag:live
 ```
 
+`bash scripts/run-rag.sh --check` also installs dependencies and checks the
+browser flow against real local retrieval services. Answer-provider calls in
+repeatable tests use controlled responses; live Copilot qualification is separate.
+
 The command starts isolated loopback services and checks real SDK capture →
 Chroma → local embeddings/reranking → cited answer, collector reader import,
 writer denial, source deletion and index pruning. Reports are

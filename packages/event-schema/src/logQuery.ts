@@ -91,7 +91,8 @@ export const LogQueryResponseSchema = z.strictObject({
 	tools: z.array(LogToolUsageSchema).max(100),
 	evidence: z.array(LogQueryEvidenceSchema).max(20),
 	retrieval: z.strictObject({
-		strategy: z.enum(['exact-aggregate', 'sqlite-fts5', 'sqlite-scan', 'failed-spans', 'recent-spans', 'contextual-spans']),
+		strategy: z.enum(['exact-aggregate', 'sqlite-fts5', 'sqlite-scan', 'failed-spans', 'recent-spans', 'contextual-spans', 'chroma-hybrid', 'chroma-vector', 'chroma-bm25']),
+		semantic: z.strictObject({ mode: z.enum(['hybrid', 'vector', 'bm25']), indexedSpans: count, indexedChunks: count, partial: z.boolean(), degraded: z.boolean() }).optional(),
 		matchedSpans: count,
 		returnedSpans: count,
 		truncated: z.boolean(),

@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 
-import { isJsonValue, type EventKind, type JsonObject, type JsonValue, type UnknownReason } from 'model-worklog-schema';
+import { isJsonValue, redactSensitiveText, type EventKind, type JsonObject, type JsonValue, type UnknownReason } from 'model-worklog-schema';
 
 import type { TokenUsageMapping, UsageProviderSelector } from './usage';
 
@@ -307,6 +307,13 @@ export class CodexAppServerAdapter {
 			await this.session.emitEvent(kind, payload, correlation);
 			emitted += 1;
 		};
+
+		if (method === 'error') {
+			const error = asRecord(params.error);
+			await record('adapter.lifecycle', { adapter: 'codex-app-server', phase: params.willRetry === true ? 'retrying' : 'failed', userFacing: true,
+				message: redactSensitiveText(optionalString(error?.message) ?? optionalString(params.message) ?? 'Codex request failed.').slice(0, 4000) });
+			return { emitted, completed: false };
+		}
 
 		if (method === 'item/agentMessage/delta') {
 			const text = optionalString(params.delta);

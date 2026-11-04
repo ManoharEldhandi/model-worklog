@@ -2,7 +2,7 @@
 
 Node.js >=22.13 SDK for explicit local tracing. The core SDK is published as
 **2.1.0**. The new `model-worklog-sdk/rag` module is available from the
-`feat/local-log-rag` source checkout and is not yet in that registry release.
+`main` source checkout and is not yet in that registry release.
 
 ## Local Setup
 

@@ -36,6 +36,14 @@ suite('Extension Test Suite', () => {
 		assert.ok(source.includes("'copilot-interactive-bridge.js'"));
 	});
 
+	test('a bad interactive CLI path produces an actionable terminal error', async function () {
+		this.timeout(10_000);
+		const execute = promisify(execFile);
+		await assert.rejects(execute(process.execPath, [join(__dirname, '..', '..', 'dist', 'copilot-interactive-bridge.js'), 'path-test'], {
+			timeout: 5000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', MODEL_WORKLOG_COPILOT_PATH: join(tmpdir(), 'missing-logger-cli', 'copilot') },
+		}), (error: unknown) => (error as Error & { stderr?: string }).stderr?.includes('MODEL_WORKLOG_COPILOT_PATH') === true);
+	});
+
 	test('builds an encoded extension client lease endpoint', () => {
 		assert.strictEqual(extensionClientPath(), '/v1/extension-clients');
 		assert.strictEqual(extensionClientPath('vscode/window'), '/v1/extension-clients/vscode%2Fwindow');
@@ -69,8 +77,8 @@ suite('Extension Test Suite', () => {
 			assert.strictEqual(config.version, 1);
 			assert.deepStrictEqual(Object.keys(config.hooks), ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SubagentStop', 'SessionEnd', 'ErrorOccurred']);
 			assert.deepStrictEqual(config.hooks.SessionStart?.[0], {
-				type: 'command', exec: 'node', args: ['-e', config.hooks.SessionStart?.[0]?.args[1], '/extension/dist/copilot-hook-bridge.js'],
-				env: { MODEL_WORKLOG_HOOK_BRIDGE: '1', MODEL_WORKLOG_SUPERVISOR_URL: 'http://127.0.0.1:43199/', MODEL_WORKLOG_HOME: '/model-worklog' }, timeoutSec: 3,
+				type: 'command', exec: process.execPath, args: ['-e', config.hooks.SessionStart?.[0]?.args[1], '/extension/dist/copilot-hook-bridge.js'],
+				env: { ELECTRON_RUN_AS_NODE: '1', MODEL_WORKLOG_HOOK_BRIDGE: '1', MODEL_WORKLOG_SUPERVISOR_URL: 'http://127.0.0.1:43199/', MODEL_WORKLOG_HOME: '/model-worklog' }, timeoutSec: 3,
 			});
 			assert.match(config.hooks.SessionStart?.[0]?.args[1] ?? '', /pathToFileURL/);
 			await removeCopilotHook(environment);
@@ -80,7 +88,8 @@ suite('Extension Test Suite', () => {
 		}
 	});
 
-	test('a missing or broken Logger bridge never blocks the Copilot tool permission hook', async () => {
+	test('a missing or broken Logger bridge never blocks the Copilot tool permission hook', async function () {
+		this.timeout(20_000); // Three bounded child-process starts can exceed Mocha's two-second default on CI.
 		const directory = await mkdtemp(join(tmpdir(), 'model-worklog hook-'));
 		const execute = promisify(execFile);
 		try {
@@ -90,10 +99,10 @@ suite('Extension Test Suite', () => {
 					await writeFile(bridgePath, state === 'broken' ? 'throw new Error("bridge unavailable");' : 'process.stdout.write("{\\"bridge\\":\\"available\\"}\\n");', 'utf8');
 				}
 				const path = await installCopilotHook({ bridgePath, supervisorUrl: 'http://127.0.0.1:43199/' }, { COPILOT_HOME: directory });
-				const config = JSON.parse(await readFile(path, 'utf8')) as { hooks: { PreToolUse: { exec: string; args: string[] }[] } };
+				const config = JSON.parse(await readFile(path, 'utf8')) as { hooks: { PreToolUse: { exec: string; args: string[]; env: Record<string, string> }[] } };
 				const hook = config.hooks.PreToolUse[0];
 				assert.ok(hook);
-				const result = await execute(hook.exec, hook.args, { timeout: 5_000 });
+				const result = await execute(hook.exec, hook.args, { timeout: 5_000, env: { ...process.env, ...hook.env, PATH: '' } });
 				assert.deepStrictEqual(JSON.parse(result.stdout), state === 'available' ? { bridge: 'available' } : {});
 				assert.strictEqual(result.stderr, '');
 			}
@@ -190,6 +199,17 @@ suite('Delete log API', () => {
 });
 
 suite('Bundled supervisor runtime', () => {
+	test('passes configured CLI paths to a detached supervisor without relying on the GUI PATH', async () => {
+		let environment: NodeJS.ProcessEnv | undefined; let probes = 0;
+		const runtime = new SupervisorRuntime({ extensionPath: '/extensions/logger', environment: () => ({ PATH: '/usr/bin', MODEL_WORKLOG_CODEX_PATH: '/custom tools/codex', MODEL_WORKLOG_COPILOT_PATH: '/custom tools/copilot' }),
+			spawnSupervisor: (_command, _args, options) => { environment = options.env; return { exitCode: null, once: () => undefined, unref: () => undefined }; },
+			probe: async () => ++probes === 1 ? { kind: 'unreachable', message: 'not running' } : interpretHealthJson({ status: 'ok', supervisorVersion: '2.1.0', apiVersion: '1.0', schemaVersion: 1,
+				instanceId: 'test-cli-paths', startedAt: '2026-11-04T10:00:00Z', capabilities: { adapters: [], features: [] } }),
+		});
+		await runtime.ensureRunning(new URL('http://127.0.0.1:43199'));
+		assert.strictEqual(environment?.MODEL_WORKLOG_CODEX_PATH, '/custom tools/codex');
+		assert.strictEqual(environment?.MODEL_WORKLOG_COPILOT_PATH, '/custom tools/copilot');
+	});
 	test('resolves a packaged entry point and accepts only loopback startup targets', () => {
 		assert.ok(bundledSupervisorPath('/extensions/model-worklog').endsWith('/dist/supervisor.js'));
 		const environment = supervisorEnvironment(new URL('http://127.0.0.1:43199'), { MODEL_WORKLOG_SUPERVISOR_HOST: '0.0.0.0' });

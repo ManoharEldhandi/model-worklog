@@ -207,6 +207,30 @@
     "configuration": {
       "title": "Model Logger",
       "properties": {
+        "model-worklog.codex.model": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Optional Codex model override for logged tasks. Leave empty to use the CLI configuration; choose a model available to your account."
+        },
+        "model-worklog.codex.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Optional full path to the codex executable, without arguments. Leave empty for automatic discovery. Restart the local Logger supervisor after changing this setting."
+        },
+        "model-worklog.copilot.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Optional full path to the copilot executable, without arguments. Leave empty for automatic discovery. Restart the local Logger supervisor after changing this setting."
+        },
+        "model-worklog.node.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Optional full path to the node executable, without arguments. Leave empty for automatic discovery. Restart the local Logger supervisor after changing this setting."
+        },
         "model-worklog.trace.projectId": {
           "type": "string",
           "default": "default",
