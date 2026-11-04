@@ -8,9 +8,11 @@ through the local API. The collector stores redacted traces in SQLite and
 accepts OpenTelemetry over HTTP, including protobuf exporters used by Python.
 
 Metadata-only capture is the default. Content requires explicit opt-in. Hidden
-reasoning and uninstrumented actions are not observable. This repository targets
-2.1.0; GitHub source/VSIX releases and npm/Marketplace publication are separate.
-Use matching locally built packages until their registry publication.
+reasoning and uninstrumented actions are not observable. The core logger is
+released as [2.1.0](https://github.com/ManoharEldhandi/model-worklog/releases/tag/v2.1.0),
+including the [npm SDK](https://www.npmjs.com/package/model-worklog-sdk).
+The new SDK RAG layer is available from **`feat/local-log-rag`**; it is not yet
+part of the published 2.1.0 packages.
 
 ## Install
 
@@ -22,7 +24,8 @@ Install [Model Logger from the VS Code Marketplace](https://marketplace.visualst
 code --install-extension manohareldhandi.model-worklog
 ```
 
-Use the matching locally built VSIX until the tracing release is published.
+Use the matching VSIX from the [2.1.0 release](https://github.com/ManoharEldhandi/model-worklog/releases/tag/v2.1.0)
+when you need the exact tracing build.
 Open a trusted workspace, run **Enable Model Logger**, then **Configure SDK
 Logging** in the **Traces** view. Choose a project; setup provisions a scoped
 writer credential without putting it in source code or the webview.
@@ -61,6 +64,33 @@ node examples/sdk-tracing-demo.mjs
 
 Existing Codex/Copilot launchers and legacy CLI session commands remain
 available. They are not required for the new tracing SDK.
+
+### Run Logger + RAG With One Command
+
+From this checkout on **`feat/local-log-rag`**:
+
+```sh
+git branch --show-current
+bash scripts/run-rag.sh
+```
+
+The launcher checks dependencies, installs missing Node/Python runtimes locally,
+installs locked JavaScript and pinned Python packages, builds the SDK, and starts
+Chroma plus CPU embedding/reranking models. It records sample logs, retrieves a
+cited answer, and opens an **Ask logs** terminal prompt. No API key or extension
+is needed. First use downloads model weights; later runs reuse the cache.
+
+```sh
+bash scripts/run-rag.sh --no-chat    # Record, answer and exit
+bash scripts/run-rag.sh --check      # Full live integration + precision/recall + ANN checks
+bash scripts/run-rag.sh --setup-only # Install dependencies and build
+```
+
+Use macOS or glibc Linux; on Windows, use WSL2. Bash, tar, and curl or wget must
+be available. Installs stay in the checkout; model weights are cached under
+`~/.cache/model-worklog/models`. No sudo or shell-profile changes are made.
+Exit or Ctrl+C stops the services and removes the temporary demo index. Quality
+reports and service logs are saved in `output/rag/`. See [setup details](docs/sdk-rag.md).
 
 ### Web Dashboard Demo
 
@@ -138,6 +168,22 @@ reranking and cited answer generation. Applications can replace its embedder,
 store, source, reranker or answer provider. No editor is required. See the
 [SDK setup and integration guide](docs/sdk-rag.md) and
 [retrieval-quality measurements](docs/rag-evaluation.md).
+
+### Measured RAG Quality
+
+The live quality gate passed **22 SDK checks** and ranked the relevant source
+first for **all 32 curated test questions**:
+
+| Measurement | Recorded result |
+| --- | ---: |
+| Source precision@1 | **100%** |
+| Source recall@3 | **100%** |
+| HNSW recall@10 versus exact cosine, 2,048 vectors / 50 queries | **99.4%** |
+
+These are synthetic regression fixtures used during development, not a blind
+production benchmark. The selected reranking profile measured 1.35 seconds p50
+on a local CPU. [Results, methodology and reproducible commands](docs/rag-evaluation.md)
+include BM25/vector/RRF comparisons and the [recorded JSON report](docs/rag-evaluation-results.json).
 
 ### Existing Collector Clients
 

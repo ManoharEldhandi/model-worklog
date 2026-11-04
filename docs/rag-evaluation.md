@@ -51,7 +51,7 @@ A separate test compares Chroma HNSW top ten with brute-force exact cosine top
 ten for 50 fresh queries over 2,048 seeded normalized 384-dimensional vectors.
 With cosine, `max_neighbors=32`, `ef_construction=200`, `ef_search=128`, the latest
 recorded run achieved **99.4% mean recall@10** (lowest query 90%). Other local
-runs ranged from 99.2% to 99.4%; approximate construction can vary. Increasing search depth to 256
+runs ranged from 99.0% to 99.4%; approximate construction can vary. Increasing search depth to 256
 did not improve the earlier run. This checks index accuracy, not semantic relevance.
 
 ## Reproduce

@@ -24,6 +24,35 @@ flowchart LR
 
 ## Run the example
 
+For automatic setup on macOS or glibc Linux (Windows: WSL2), run from the
+`feat/local-log-rag` checkout:
+
+```sh
+bash scripts/run-rag.sh
+```
+
+It checks Node >=22.13, Python 3.13 and all JavaScript/Python dependencies,
+installs missing components locally, builds, starts isolated services, records a
+sample refund failure and opens a terminal prompt for questions. No model account
+is needed. Type `exit` or press Ctrl+C to stop. The sample index is temporary,
+and answers show captured log excerpts with citations.
+
+Use `--no-chat` for one sample answer, `--check` for the complete live quality
+gate, or `--setup-only` to prepare dependencies without starting services.
+The script requires Bash, tar, and curl or wget. Missing Node is downloaded from
+nodejs.org and SHA-256 checked; missing Python is provisioned with
+[uv](https://docs.astral.sh/uv/guides/install-python/). Private runtimes live in
+`.cache/rag-tools/`, Python packages in `.venv-rag/`, and Node packages in
+`node_modules/`. It does not use sudo or change shell profiles. Existing compatible
+runtimes and downloaded models are reused. `MODEL_WORKLOG_RAG_PYTHON` can select
+an existing Python 3.13 environment; `MODEL_WORKLOG_MODEL_CACHE` changes the cache.
+
+The launcher prints the branch/commit and writes diagnostic logs in `output/rag/`.
+It cleans up its own local services and temporary data on exit. Do not run it
+alongside other builds/tests in the same checkout.
+
+### Manual setup
+
 Use Node >=22.13 and Python 3.13. From the repository root:
 
 ```sh
@@ -73,8 +102,6 @@ const rag = new LogRag({
     queryPrefix: 'query: ', documentPrefix: 'passage: ',
   }),
   reranker: new HttpLogRagReranker('http://127.0.0.1:18562/v1/rerank'),
-  minRerankScore: 0.0001, rerankRecallFloor: 0.8,
-  rerankVectorWeight: 0.75,
 });
 
 const logger = createModelLogger({
@@ -152,6 +179,11 @@ excerpts. This validates citation identity, not the truth of every generated cla
   and `failureBoost` are adjustable. Scores are not calibrated probabilities.
 - Repeated content is deduplicated in results; each span contributes at most two
   chunks. Exact counts use distinct indexed span identities, never top-k samples.
+
+The general example leaves score rejection disabled. The evaluation uses a
+specific rejection threshold and semantic recall floor tuned to its labelled
+corpus. Calibrate those options on your application's logs: a threshold that
+works there can reject relevant short passages elsewhere.
 
 The tested local profile uses **BAAI/bge-small-en-v1.5** (384 dimensions) and
 **ms-marco-MiniLM-L-12-v2**. A larger embedding model and another reranker did not

@@ -48,6 +48,7 @@ try {
 		MODEL_WORKLOG_MIN_RERANK_SCORE: '0.0001', MODEL_WORKLOG_RERANK_VECTOR_WEIGHT: '0.75', MODEL_WORKLOG_HNSW_EF_SEARCH: '128',
 		MODEL_WORKLOG_EVAL_MODES: 'bm25,vector,hybrid,hybridReranked', MODEL_WORKLOG_RAG_REPORT: 'output/rag/evaluation.json' };
 	await command(['--test', 'packages/adapter-sdk/test-dist/rag/*.test.js', 'examples/rag/evaluation/metrics.test.mjs', 'examples/rag/integration.test.mjs'], env);
+	await command(['examples/rag/quickstart.mjs'], env);
 	await command(['examples/rag/evaluation/run.mjs', '--check'], env);
 	await command(['examples/rag/evaluation/ann.mjs', '--check'], env);
 	console.log('All SDK RAG integration, retrieval-quality and ANN checks passed.');

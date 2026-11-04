@@ -27,10 +27,8 @@ jobs:
         with:
           path: ~/.cache/model-worklog/models
           key: rag-models-v1-${{ runner.os }}-${{ hashFiles('examples/rag/requirements.txt', 'examples/rag/local_embeddings.py') }}
-      - run: npm ci
-      - run: python -m venv .venv-rag
-      - run: .venv-rag/bin/pip install -r examples/rag/requirements.txt
-      - run: npm run test:rag:live
+      - run: bash scripts/run-rag.sh --check
+      - run: npm run test:rag:launcher
       - uses: actions/upload-artifact@v4
         if: always()
         with:

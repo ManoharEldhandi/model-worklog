@@ -41,7 +41,9 @@
     "release:versions": "node scripts/check-release-versions.mjs",
     "release:check": "npm run release:versions && npm run test && npm run test:browser && npm run demo:trace && npm run extension:install && npm run extension:test && npm run pack:check && npm run extension:package",
     "package:extension": "npm --prefix apps/vscode-extension run vsix",
-    "pack:check": "npm run build && npm pack --dry-run --workspace model-worklog-schema && npm pack --dry-run --workspace model-worklog-supervisor && npm pack --dry-run --workspace model-worklog && npm pack --dry-run --workspace model-worklog-sdk"
+    "pack:check": "npm run build && npm pack --dry-run --workspace model-worklog-schema && npm pack --dry-run --workspace model-worklog-supervisor && npm pack --dry-run --workspace model-worklog && npm pack --dry-run --workspace model-worklog-sdk",
+    "rag:demo": "bash scripts/run-rag.sh",
+    "test:rag:launcher": "node --test scripts/run-rag.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

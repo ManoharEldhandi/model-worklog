@@ -1,8 +1,8 @@
 # model-worklog-sdk
 
-Node.js >=22.13 SDK for explicit local tracing. This reference targets **2.1.0**.
-GitHub source/VSIX releases and npm publication are separate. Use the checkout
-until the operator publishes `model-worklog-sdk@2.1.0` to the registry.
+Node.js >=22.13 SDK for explicit local tracing. The core SDK is published as
+**2.1.0**. The new `model-worklog-sdk/rag` module is available from the
+`feat/local-log-rag` source checkout and is not yet in that registry release.
 
 ## Local Setup
 
