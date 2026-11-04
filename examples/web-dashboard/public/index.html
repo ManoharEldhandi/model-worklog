@@ -55,6 +55,7 @@
 						<fieldset class="view-switch" aria-label="Log view">
 							<label><input type="radio" name="log-view" value="activity" checked><span>Activity</span></label>
 							<label><input type="radio" name="log-view" value="spans"><span>SDK spans</span></label>
+							<label><input type="radio" name="log-view" value="query"><span>Ask logs</span></label>
 						</fieldset>
 						<label class="follow-control"><input id="follow-log" type="checkbox" checked>Follow</label>
 					</div>
@@ -77,10 +78,36 @@
 						<li class="empty-state">No captured activity.</li>
 					</ol>
 					<footer class="log-footer"><span id="capture-summary">No run selected</span><span class="trace-count" id="trace-count">0 spans stored</span></footer>
+					<section class="query-panel" id="query-panel" aria-label="Ask captured logs" hidden>
+						<div class="query-scope-row">
+							<label for="query-scope">Scope</label>
+							<select id="query-scope"><option value="all">All retained traces</option><option value="latest" disabled>Latest capture</option></select>
+							<button id="sample-button" type="button">Record sample</button>
+							<button id="query-new" type="button" title="Clear the log conversation">New chat</button>
+						</div>
+						<details class="query-filters"><summary>Filters</summary><div class="query-filter-grid">
+								<label>Tool<input id="query-tool" type="text" maxlength="256" placeholder="Any tool" autocomplete="off"></label>
+								<label>Query type<select id="query-intent"><option value="auto">Automatic</option><option value="tools">Tool counts</option><option value="failures">Failures</option><option value="search">Evidence search</option></select></label>
+								<label>Since (local)<input id="query-since" type="datetime-local"></label>
+								<label>Until (local)<input id="query-until" type="datetime-local"></label>
+						</div></details>
+						<label class="query-model-control" id="query-model-control" hidden><input id="query-model" type="checkbox" title="Send this question, recent conversation, and bounded redacted evidence to the configured provider"><span id="query-model-label">Model answers</span></label>
+						<div class="query-result-heading"><p id="query-status" role="status">No conversation yet</p><button id="query-export" type="button" title="Download the conversation and cited evidence as JSON" disabled>Export chat</button></div>
+						<div id="query-result" class="query-result" role="log" aria-label="Log conversation" aria-live="polite" aria-relevant="additions text" tabindex="0"><p class="empty-state">No messages yet.</p></div>
+						<p id="query-error" class="query-error" role="alert" hidden></p>
+						<form id="query-form" class="query-form">
+							<label class="sr-only" for="question">Question about the logs</label>
+							<div class="query-composer">
+								<textarea id="question" maxlength="2000" required placeholder="Ask about the captured logs..."></textarea>
+								<button id="ask-button" type="submit" title="Send log question" aria-label="Send log question">&#8593;</button>
+								<button id="query-stop" type="button" title="Stop the current answer" hidden>Stop</button>
+							</div>
+						</form>
+					</section>
 				</section>
 			</aside>
 		</section>
 	</main>
-	<script src="/app.js"></script>
+	<script type="module" src="/app.js"></script>
 </body>
 </html>

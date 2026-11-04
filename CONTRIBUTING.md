@@ -21,6 +21,12 @@ scoped reader, and retained trace contract. CI must qualify the exact minimum
 Node 22.13.0 as well as the supported release runtime; floating Node 22 is not
 minimum-version evidence. See [release gates](docs/releasing.md).
 
+SDK RAG changes also require `bash scripts/run-rag.sh --check`. It installs
+missing dependencies, starts isolated Chroma and local models, and checks
+ingestion, retention, retrieval quality and ANN recall. Run
+`npm run test:rag:launcher` for startup and shutdown regressions. CI retains
+reports under `output/rag/`. Run these serially with the other checks.
+
 Do not run overlapping builds, prepack hooks, tests, or VSIX packaging in a
 checkout under browser/editor validation: they rewrite shared generated output.
 For docs-only work, check `git diff --check`, relative links, and documented APIs;

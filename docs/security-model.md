@@ -23,7 +23,7 @@ Use Node.js >=22.13 for the repository and collector.
 | Role | Allowed operations |
 | --- | --- |
 | Writer | Submit SDK batches or OTLP spans for explicitly authorized projects. |
-| Reader | List and read traces for explicitly authorized projects. |
+| Reader | List/read traces and query retained trace logs for explicitly authorized projects. |
 | Admin | Issue/revoke credentials, delete traces, run retention, and read/write. |
 
 Keep the installation `auth-token` and `RunningSupervisor.authToken` in the
@@ -68,6 +68,51 @@ Collector intake is bounded to 100 spans/snapshots and 2 MiB per request.
 OTLP accepts HTTP JSON or protobuf, not compression or gRPC. Bounded SDK queues
 can drop telemetry; neither a successful application call nor a local spool
 guarantees complete or exactly-once evidence.
+
+## Log Retrieval And Optional Synthesis
+
+The SDK's [Chroma RAG module](sdk-rag.md) is opt-in and independent of editor UI.
+It redacts and bounds chunks before embedding/indexing. Its project filters are
+not authentication: the embedding application must authorize callers. Chroma is
+a separate derived copy; wire deletion into application retention or run complete
+scoped `sync(..., { prune: true })` after collector retention. A partial scan
+cannot authorize pruning. Use a single writer and a separate collection for a
+changed embedding model/version. Indexing and source storage are not one transaction.
+
+`POST /v2/logs/query` inherits trace authentication, explicit project scoping,
+loopback origin guards, and redaction. Writer credentials cannot query. Exact
+aggregates and bounded FTS5 excerpts use retained spans only; legacy sessions are
+not silently imported. Index maintenance shares the span transaction, including
+revisions, rollback, deletion, and retention. Query admission is separate from
+authentication and ingestion.
+
+The standalone query API defaults to local evidence-only mode. Optional synthesis
+requires an operator-configured provider and a model-enabled request. The Copilot
+browser demo explicitly configures that provider and enables **Copilot answers**;
+users can turn it off. The question, bounded recent conversation, redacted
+authorized evidence, and exact aggregates are sent; a provider may retain that
+data under its own policies.
+Redaction is not a guarantee that prose is non-sensitive. Do not opt in for data
+that must remain on the host. Configured endpoints require HTTPS or loopback HTTP
+and cannot redirect credentials. API keys remain in the operator environment.
+
+The Copilot answer subprocess has no available tools, denies shell/write/URL
+permissions, disables built-in MCP/custom instructions and remote export, and
+runs in an isolated empty working directory. This is a restricted provider
+configuration, not an OS sandbox. The installed CLI and its local authentication
+remain trusted. Copilot may retain requests in its own private session state;
+the collector's no-history-storage behavior is not a provider retention promise.
+
+Retrieved text and previous answers are untrusted data, never executed. Bounded
+output and per-answer source-ID validation reduce generation risks but cannot
+prove that a model's claims follow from the evidence. Generated interpretations
+are labelled; timeout/provider/citation failures show the local evidence answer.
+Tool aggregates never depend on generation, though an AI may explain them.
+Questions/history are not stored by the query layer. Browser history is bounded,
+memory-only, and cleared on scope changes; exports are explicit. Marked output
+is sanitized with DOMPurify before rendering, with scripts, images, active HTML,
+and unsafe links excluded. Review exports and editor buffers like other content.
+See [retrieval limits](log-retrieval.md) before deployment.
 
 ## Storage And Threat Limits
 

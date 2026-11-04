@@ -5,13 +5,18 @@ import { PrivacyPolicySchema, ProjectIdSchema, type PrivacyOptions } from 'model
 import { TraceApi } from './application/api';
 import { TraceCredentials } from './application/credentials';
 import { TraceIntake } from './application/intake';
+import { LogQueryService } from './application/logQuery';
 import { traceStorageLimits } from './application/options';
 import type { TraceStorageOptions } from './domain/contracts';
+import type { LogAnswerGenerator } from './domain/logQuery';
 import { createTraceHandler, type TraceRequestHandler } from './http';
 import { CryptoSecrets, SignedTraceCursors } from './infrastructure/crypto';
 import { SqliteCredentialRepository } from './infrastructure/credentials';
 import { TraceDatabase } from './infrastructure/database';
 import { TraceFileGuard, readPrivateToken, writePrivateToken } from './infrastructure/files';
+import { LocalLogQueryAdmission } from './infrastructure/logQueryAdmission';
+import { SqliteLogQueryRepository } from './infrastructure/logQueryRepository';
+import { SqliteLogSearchIndex } from './infrastructure/logSearchIndex';
 import { SqliteTraceRepository } from './infrastructure/repository';
 
 export interface TraceRuntimeOptions {
@@ -21,6 +26,7 @@ export interface TraceRuntimeOptions {
 	readonly privacy?: PrivacyOptions;
 	readonly storage?: TraceStorageOptions;
 	readonly projectId?: string;
+	readonly answerGenerator?: LogAnswerGenerator;
 }
 
 export interface TraceRuntime {
@@ -54,9 +60,12 @@ export function openTraceRuntime(options: TraceRuntimeOptions): TraceRuntime {
 	try {
 		const secrets = new CryptoSecrets();
 		const credentials = new TraceCredentials(new SqliteCredentialRepository(database, now), secrets, options.adminToken, now);
-		const repository = new SqliteTraceRepository(database, limits);
+		const searchIndex = new SqliteLogSearchIndex(database);
+		searchIndex.initialize();
+		const repository = new SqliteTraceRepository(database, limits, [searchIndex]);
 		const intake = new TraceIntake(repository, secrets, privacy, now, limits.retentionTtlSeconds);
-		const api = new TraceApi(credentials, intake, repository, new SignedTraceCursors(secrets.digest(options.adminToken)), now, limits.retentionTtlSeconds);
+		const queries = new LogQueryService(new SqliteLogQueryRepository(database), new LocalLogQueryAdmission(now), now, options.answerGenerator);
+		const api = new TraceApi(credentials, intake, repository, new SignedTraceCursors(secrets.digest(options.adminToken)), now, limits.retentionTtlSeconds, queries);
 		if (options.projectId !== undefined) { provisionWriter(options.dataDirectory, options.projectId, credentials, options.adminToken); }
 		return { handler: createTraceHandler(api), close: () => { database.close(); } };
 	} catch (error) { database.close(); throw error; }

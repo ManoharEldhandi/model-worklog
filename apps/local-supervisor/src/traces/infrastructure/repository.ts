@@ -1,6 +1,7 @@
 import type { TraceBatchAck } from 'model-worklog-schema';
 
 import { TraceError, type PreparedSpan, type SummarySpan, type TraceRepository, type TraceStorageLimits } from '../domain/contracts';
+import type { SpanPersistenceInterceptor } from '../domain/logQuery';
 import { summarizeTrace, traceCanExpire } from '../domain/summary';
 import { TraceDatabase, integer, text } from './database';
 import { TraceQueries } from './queries';
@@ -11,7 +12,7 @@ function summaryInput(prepared: PreparedSpan): SummarySpan {
 }
 
 export class SqliteTraceRepository extends TraceQueries implements TraceRepository {
-	constructor(private readonly store: TraceDatabase, private readonly limits: TraceStorageLimits) { super(store); }
+	constructor(private readonly store: TraceDatabase, private readonly limits: TraceStorageLimits, private readonly spanInterceptors: readonly SpanPersistenceInterceptor[] = []) { super(store, spanInterceptors); }
 
 	ingest(spans: readonly PreparedSpan[], receivedAt: string, retentionBefore?: string): TraceBatchAck {
 		return this.store.transaction(true, () => {
@@ -42,11 +43,13 @@ export class SqliteTraceRepository extends TraceQueries implements TraceReposito
 				if (Buffer.byteLength(payload) > 2 * 1024 * 1024) { throw new TraceError(413, 'span_too_large', 'A retained span after redaction must not exceed 2097152 bytes.'); }
 				const summary = JSON.stringify(summaryInput(prepared));
 				const bytes = Buffer.byteLength(payload) + Buffer.byteLength(summary) + 256;
+				for (const interceptor of this.spanInterceptors) { interceptor.beforeSpanWrite(span.projectId, span.traceId, span.spanId); }
 				this.store.statement(`INSERT INTO spans(project_id, trace_id, span_id, revision, content_hash, identity_hash, state, payload, summary_input, received_at, stored_bytes)
 					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					ON CONFLICT(project_id, trace_id, span_id) DO UPDATE SET revision = excluded.revision, content_hash = excluded.content_hash,
 					state = excluded.state, payload = excluded.payload, summary_input = excluded.summary_input, received_at = excluded.received_at, stored_bytes = excluded.stored_bytes`)
 					.run(span.projectId, span.traceId, span.spanId, span.revision, contentHash, identityHash, span.state, payload, summary, receivedAt, bytes);
+				for (const interceptor of this.spanInterceptors) { interceptor.afterSpanWrite(span.projectId, span.traceId, span.spanId); }
 				affected.set(`${span.projectId}/${span.traceId}`, { projectId: span.projectId, traceId: span.traceId });
 				accepted += 1;
 			}

@@ -6,6 +6,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import {
 	ActivityLogSchema,
+	TraceListSchema,
+	TraceDetailSchema,
 	TraceActivityLogSchema,
 	isJsonValue,
 	type EventKind,
@@ -18,7 +20,11 @@ import {
 	type UnknownReason,
 	type ActivityLog,
 	type TraceActivityLog,
+	type LogQueryInput,
+	type LogQueryResponse,
 } from 'model-worklog-schema';
+import { queryCapturedLogs } from './logQueryClient';
+import { readTracePage, type TraceReadOptions } from './traceReadClient';
 import { normalizeProviderUsage, type TokenUsageMapping, type UsageNormalization, type UsageProviderSelector } from './usage';
 
 export * from './usage';
@@ -38,6 +44,7 @@ export { instrumentMcpClient, type McpClient, type McpInstrumentationOptions } f
 export { buildSessionActivity, buildSessionLog, buildTraceActivity, buildTraceLog, formatActivityText, formatSessionEventText, presentSessionEvent } from 'model-worklog-schema';
 export type { ActivityCategory, ActivityEntry, ActivityResource, ActivitySource, ActivityStatus, ActivityTool } from 'model-worklog-schema';
 export type { ActivityLog, TraceActivityLog, LogEntry, LogOperation, LogUsage } from 'model-worklog-schema';
+export type { LogQueryInput, LogQueryRequest, LogQueryResponse, LogConversationMessage } from 'model-worklog-schema';
 
 export const DEFAULT_SUPERVISOR_URL = 'http://127.0.0.1:43199' as const;
 
@@ -47,6 +54,8 @@ export interface FetchLike {
 		readonly headers?: Record<string, string>;
 		readonly body?: string;
 		readonly signal?: AbortSignal;
+		readonly redirect?: 'error';
+		readonly cache?: 'no-store';
 	}): Promise<Response>;
 }
 
@@ -264,6 +273,17 @@ export class LocalSupervisorClient {
 		const parsed = TraceActivityLogSchema.safeParse(await this.request<unknown>(`/v2/traces/${encodeURIComponent(traceId)}/log?${query}`, 'GET'));
 		if (!parsed.success || parsed.data.projectId !== projectId || parsed.data.traceId !== traceId) { throw new SupervisorRequestError(200, 'Supervisor returned a malformed or mismatched trace log.'); }
 		return parsed.data;
+	}
+
+	askLogs(input: LogQueryInput, options: { readonly signal?: AbortSignal } = {}): Promise<LogQueryResponse> {
+		return queryCapturedLogs(this.baseUrl, this.options.token, this.fetchImpl, input, options.signal);
+	}
+
+	async listTraces(projectId: string, options: TraceReadOptions = {}): Promise<ReturnType<typeof TraceListSchema.parse>> {
+		return TraceListSchema.parse(await readTracePage(this.baseUrl, this.options.token, this.fetchImpl, projectId, undefined, options));
+	}
+	async getTraceSpans(projectId: string, traceId: string, options: TraceReadOptions = {}): Promise<ReturnType<typeof TraceDetailSchema.parse>> {
+		return TraceDetailSchema.parse(await readTracePage(this.baseUrl, this.options.token, this.fetchImpl, projectId, traceId, options));
 	}
 
 	private async request<T>(pathname: string, method: string, body?: JsonObject): Promise<T> {

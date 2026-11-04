@@ -1,3 +1,6 @@
+import { createLogConversation } from './logConversation.js';
+import { markdownContent } from './markdown.js';
+
 const form = document.querySelector('#chat-form');
 const input = document.querySelector('#message');
 const sendButton = document.querySelector('#send-button');
@@ -15,14 +18,24 @@ const followLog = document.querySelector('#follow-log');
 const activityCount = document.querySelector('#activity-count');
 const captureSummary = document.querySelector('#capture-summary');
 const runDate = document.querySelector('#run-date');
+const queryPanel = document.querySelector('#query-panel');
+const questionInput = document.querySelector('#question');
+const queryScope = document.querySelector('#query-scope');
+const queryTool = document.querySelector('#query-tool');
+const queryIntent = document.querySelector('#query-intent');
+const queryStatus = document.querySelector('#query-status');
+const queryError = document.querySelector('#query-error');
+const sampleButton = document.querySelector('#sample-button');
 
 let activeRun;
 let pollTimer;
 let currentRun;
 let selectedView = 'activity';
+let pendingSampleQuery = false;
 const expanded = new Set();
 const rows = new Map();
 const VIEW_LIMIT = 500;
+const logConversation = createLogConversation({ getTraceId: () => currentRun?.traceId });
 
 function nearBottom(container) {
 	return container.scrollHeight - container.scrollTop - container.clientHeight < 32;
@@ -44,7 +57,8 @@ function addMessage(role, text) {
 	messages.querySelector('.empty-state')?.remove();
 	const message = element('article', `message ${role}`);
 	message.append(element('p', 'message-label', role === 'user' ? 'You' : 'Assistant'));
-	message.append(element('p', 'message-content', text));
+	if (role === 'assistant') { const body = element('div', 'message-content markdown'); body.append(markdownContent(text)); message.append(body); }
+	else { message.append(element('p', 'message-content', text)); }
 	messages.append(message);
 	if (follow) {
 		messages.scrollTop = messages.scrollHeight;
@@ -53,11 +67,12 @@ function addMessage(role, text) {
 
 function setRunning(running) {
 	sendButton.disabled = running;
+	sampleButton.disabled = running;
 	input.disabled = running;
 	if (running) {
 		setDownload({ downloadReady: false });
 	}
-	if (!running) {
+	if (!running && selectedView !== 'query') {
 		input.focus();
 	}
 }
@@ -155,6 +170,7 @@ function matches(entry) {
 }
 
 function renderTimeline() {
+	if (selectedView === 'query') { return; }
 	const entries = selectedView === 'spans' ? currentRun?.trace?.activity ?? [] : currentRun?.activity?.entries ?? [];
 	const filtered = entries.filter(matches);
 	const visible = filtered.slice(-VIEW_LIMIT);
@@ -177,6 +193,9 @@ function renderTimeline() {
 
 function renderRun(run) {
 	currentRun = run;
+	queryScope.querySelector('[value="latest"]').disabled = run.traceId === undefined;
+	if (run.traceId !== undefined && queryScope.dataset.initialized !== 'true') { queryScope.value = 'latest'; queryScope.dataset.initialized = 'true'; }
+	logConversation.syncScope();
 	renderTimeline();
 	setDownload(run);
 	runState.textContent = run.status;
@@ -224,7 +243,14 @@ async function updateRun() {
 		setRunning(false);
 		if (run.status === 'completed') {
 			addMessage('assistant', run.response);
+			if (pendingSampleQuery) {
+				pendingSampleQuery = false;
+				queryTool.value = '';
+				queryIntent.value = 'auto';
+				void logConversation.ask('Summarize the captured run.');
+			}
 		} else {
+			pendingSampleQuery = false;
 			addMessage('assistant', `The run stopped: ${run.error ?? 'Unknown error'}`);
 		}
 	} catch (error) {
@@ -242,7 +268,9 @@ form.addEventListener('submit', async (event) => {
 		return;
 	}
 	window.clearTimeout(pollTimer);
+	if (queryScope.value === 'latest') { logConversation.clear('New capture started'); }
 	currentRun = undefined;
+	queryScope.querySelector('[value="latest"]').disabled = true;
 	expanded.clear();
 	rows.clear();
 	addMessage('user', message);
@@ -275,9 +303,40 @@ form.addEventListener('submit', async (event) => {
 search.addEventListener('input', renderTimeline);
 filter.addEventListener('change', renderTimeline);
 document.querySelectorAll('input[name="log-view"]').forEach((control) => {
-	control.addEventListener('change', () => { selectedView = control.value; renderTimeline(); });
+	control.addEventListener('change', () => {
+		selectedView = control.value;
+		const querying = selectedView === 'query';
+		queryPanel.hidden = !querying;
+		for (const target of ['.log-filters', '.log-caption', '#timeline', '.log-footer', '.follow-control']) { document.querySelector(target).hidden = querying; }
+		if (querying) { questionInput.focus(); } else { renderTimeline(); }
+	});
 });
 followLog.addEventListener('change', () => { if (followLog.checked) { timeline.scrollTop = timeline.scrollHeight; } });
+
+sampleButton.addEventListener('click', async () => {
+	if (activeRun !== undefined) { return; }
+	logConversation.clear('Recording sample capture');
+	currentRun = undefined;
+	setRunning(true);
+	queryError.hidden = true;
+	queryStatus.textContent = 'Recording sample capture...';
+	try {
+		const response = await fetch('/api/logs/sample', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(15_000) });
+		const payload = await response.json();
+		if (!response.ok) { throw new Error(payload?.error?.message ?? 'Sample capture failed.'); }
+		activeRun = payload.runId;
+		pendingSampleQuery = true;
+		addMessage('user', 'Record inventory sample capture');
+		queryScope.querySelector('[value="latest"]').disabled = false;
+		queryScope.value = 'latest';
+		void updateRun();
+	} catch (error) {
+		setRunning(false);
+		queryError.textContent = error instanceof Error ? error.message : 'Sample capture failed.';
+		queryError.hidden = false;
+		queryStatus.textContent = 'Sample capture failed';
+	}
+});
 
 async function loadConfig() {
 	try {
@@ -286,6 +345,7 @@ async function loadConfig() {
 			throw new Error('Configuration unavailable');
 		}
 		const config = await response.json();
+		logConversation.configure(config);
 		providerMode.textContent = config.mode === 'copilot' ? 'GitHub Copilot' : config.mode === 'openai-compatible' ? 'Live provider' : 'Offline demo';
 		connectionStatus.textContent = `${config.provider} / Local collector`;
 		workspaceContext.textContent = `${config.workspace.label}: ${config.workspace.files.join(', ')}`;

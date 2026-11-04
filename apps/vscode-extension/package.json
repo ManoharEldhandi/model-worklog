@@ -116,6 +116,13 @@
         "enablement": "modelWorklog.traceRead"
       },
       {
+        "command": "model-worklog.trace.ask",
+        "title": "Ask Captured Logs",
+        "category": "Model Logger",
+        "icon": "$(search)",
+        "enablement": "modelWorklog.traceRead && !modelWorklog.traceBusy"
+      },
+      {
         "command": "model-worklog.trace.loadMore",
         "title": "Load More Traces",
         "category": "Model Logger",
@@ -171,10 +178,12 @@
         { "command": "model-worklog.trace.selectProject", "when": "view == model-worklog.traces", "group": "navigation@1" },
         { "command": "model-worklog.trace.refresh", "when": "view == model-worklog.traces || view == model-worklog.traceDetails", "group": "navigation@2" },
         { "command": "model-worklog.trace.configureSdk", "when": "view == model-worklog.traces && modelWorklog.traceAdmin", "group": "navigation@3" },
+        { "command": "model-worklog.trace.ask", "when": "(view == model-worklog.traces || view == model-worklog.traceDetails) && modelWorklog.traceRead", "group": "navigation@5" },
         { "command": "model-worklog.trace.export", "when": "view == model-worklog.traceDetails && modelWorklog.traceRead && modelWorklog.traceSelected", "group": "navigation@3" },
         { "command": "model-worklog.trace.delete", "when": "view == model-worklog.traceDetails && modelWorklog.traceAdmin && modelWorklog.traceSelected", "group": "navigation@4" }
       ],
       "view/item/context": [
+        { "command": "model-worklog.trace.ask", "when": "view == model-worklog.traces && (viewItem == trace-admin || viewItem == trace-reader)", "group": "navigation@1" },
         { "command": "model-worklog.trace.export", "when": "view == model-worklog.traces && (viewItem == trace-admin || viewItem == trace-reader)", "group": "inline@1" },
         { "command": "model-worklog.trace.delete", "when": "view == model-worklog.traces && viewItem == trace-admin", "group": "inline@2" }
       ]

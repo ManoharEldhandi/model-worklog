@@ -1,0 +1,243 @@
+# Log Retrieval And Answers
+
+For Chroma HNSW, embeddings, BM25/RRF, application integration and measured
+retrieval quality, use the [SDK RAG guide](sdk-rag.md). This page describes the
+existing collector query endpoint and its compatibility clients.
+
+This feature is available from the source branch with matching locally built
+packages. It does not imply a new npm or Marketplace publication.
+
+Ask questions over retained, redacted trace spans without loading entire logs
+into a prompt. **Ask logs is a conversation**, not a tool-count dashboard. The
+retrieval layer finds relevant requests, responses, files, tools, errors, timing,
+models, and reported usage. Copilot or an OpenAI-compatible provider explains
+that evidence in natural language and supports follow-ups. Exact aggregates come
+from SQLite rather than being estimated from a prompt sample.
+
+## Browser Demo
+
+From the repository root, use Node.js >=22.13:
+
+```sh
+npm ci
+npm run build
+npm run demo:web
+```
+
+The default provider is the installed Copilot CLI, authenticated with
+`copilot login`. Model calls use that account and can consume AI credits.
+
+1. Open the printed loopback URL. Send a workspace-review request on the left
+  to capture a real Copilot run, or choose **Ask logs > Record sample** to
+  perform a repeatable local workload.
+2. In **Ask logs**, keep **Copilot answers** enabled and ask **Summarize this
+  run**, **What did the user ask?**, **What did it answer?**, or **Which files
+  were read?**. Copilot receives retrieved log evidence, not workspace access.
+3. Continue with **Why did it do that?**, **What failed?**, **Which model was
+  used?**, or **How many times was view used?**. Each turn retrieves fresh
+  scoped evidence; earlier AI replies are not treated as ground truth.
+4. Click an inline citation to open its evidence. Exact counts and tool tables
+  are supporting details, collapsed beneath each reply rather than the primary
+  experience. **Open retained source** reads the original span revision currently
+  retained by the collector; it may have advanced since the answer snapshot.
+5. Use **Stop**, **Retry**, **New chat**, scope/time/tool filters, or **Export
+  chat** as needed. Scope changes clear history and abort an outstanding answer.
+
+The sample records **122 tool calls**: `read_file` 120, `search_workspace` 1,
+and `validate_stock` 1. Its handled negative-stock failure is real local sample
+behavior, not an invented model result. It does not itself call a model; answering
+questions with Copilot is a separate operation.
+
+For a no-account evidence-only demonstration, use
+`MODEL_WORKLOG_DEMO_PROVIDER=offline-demo npm run demo:web`. Copilot generation
+is then unavailable; local fallback answers and evidence remain usable. An
+OpenAI-compatible demo provider uses the server-only settings in the root README
+and requires enabling **Model answers** for the log question.
+
+The demo projects captured Copilot messages, file activity, readable summaries,
+usage, and tool lifecycles into source-linked spans. Readable streaming assembly
+is reused so deltas are not mistaken for separate replies. Only `kind: tool`
+spans contribute to tool-call totals. Raw legacy sessions elsewhere are not
+silently imported, and missing historical content cannot be reconstructed.
+
+The dashboard keeps credentials server-side, rejects cross-origin requests,
+allows one capture at a time, and caches the newest 20 completed/current run
+views. Its isolated temporary collector and workspace are removed on shutdown.
+Its local HTTP proxy is for demos, not a remotely exposed deployment.
+
+The browser keeps at most 20 conversation turns in memory and sends at most
+12 recent user/assistant messages, 4,000 characters each and 16,000 characters
+in total. Reloading or **New chat** clears that state. Completed-turn exports
+include redacted questions, answers, scoped counts, snapshots, and citations,
+not collector credentials. Review exports before sharing.
+
+## CLI And VS Code
+
+```sh
+npm run cli -- ask "What tools were used?" --project default --format pretty
+npm run cli -- ask "How many times was read_file used?" --project default
+npm run cli -- ask "What failed?" --project default --tool validate_stock
+npm run cli -- ask "inventory validation" --project default --intent search --limit 5
+npm run cli -- ask "Summarize this run" --project default --synthesis model
+```
+
+Use the project ID actually instrumented by your application. Optional flags
+include `--trace`, `--since`, `--until`, `--tool`, `--intent`, `--limit`, and
+`--synthesis`. JSON and JSONL outputs retain counts, source identities, revisions,
+capture reports, coverage notes, and the retrieval/generation strategy.
+
+The CLI uses the existing local credential lookup. Prefer a scoped reader
+provided privately through `MODEL_WORKLOG_TOKEN`; otherwise the local operator
+credential is used. A writer credential cannot query logs.
+
+In VS Code, enable Model Logger, select the desired Traces project, and run
+**Model Logger: Ask Captured Logs** from the Traces toolbar or command palette.
+Choose the project or selected trace scope. Answers appear in **Model Logger
+Answers**; the source picker opens the exact retrieved evidence snapshot,
+independently of sidebar pagination. The command uses local answers and does not
+persist question history or enable content capture.
+
+## API
+
+`POST /v2/logs/query` requires a reader or admin credential in the existing
+`x-model-worklog-token` header and an explicit authorized project:
+
+```json
+{
+  "schemaVersion": 1,
+  "projectId": "default",
+  "question": "What did it answer?",
+  "history": [
+    { "role": "user", "content": "Summarize the last run." },
+    { "role": "assistant", "content": "It reviewed the inventory files." }
+  ],
+  "intent": "auto",
+  "synthesis": "model",
+  "limit": 8
+}
+```
+
+Optional `traceId`, `toolName`, `since`, and `until` narrow the scope. Time filters
+compare span start times inclusively, not completion or receipt times. Use ISO
+UTC timestamps. `toolName` matches exactly, ignoring ASCII case; a plainly named
+tool in a usage question is also recognized. Use an explicit filter when a name
+is ambiguous. `intent` can force `tools`, `failures`, or lexical `search`.
+
+The standalone API defaults to `synthesis: extractive` for backwards-compatible
+local evidence answers. Conversation history is bounded and stateless; only
+`user` and `assistant` roles are accepted. History is redacted, and historical
+citation IDs are removed from model context so they cannot masquerade as current
+sources. It does not grant access to another project or trace.
+
+Responses include exact scoped totals, models/services, time coverage, reported
+token subtotals and completeness, up to 100 tool groups, and up to 20 evidence
+records. `[A1]` cites the current exact aggregates; `[S1]` cites a retrieved span.
+IDs belong to that answer, not to the whole conversation. Spans retain identity,
+revision, capture reports, and explicit excerpt-truncation flags. Source spans
+can be read using the existing paginated
+`GET /v2/traces/:traceId?projectId=...` endpoint. Only the latest revision is
+retained; a later read may have advanced or been deleted since the query snapshot.
+
+Errors preserve the collector's contract: `400` invalid input, `401` invalid or
+expired credentials, `403` wrong role/project/origin, `429` query budget or busy
+storage, and `507` storage capacity. Query strings and unknown fields are not
+accepted. Queries do not write captured log payloads or mint credentials.
+
+## Optional Model Synthesis
+
+For standalone Copilot answers, explicitly configure the operator process:
+
+```sh
+MODEL_WORKLOG_RAG_PROVIDER=copilot npm run supervisor
+```
+
+`MODEL_WORKLOG_RAG_MODEL` optionally selects an available Copilot model. This
+does not turn on content capture or replace the existing local authentication.
+Requests still need `synthesis: model`. The browser demo configures Copilot
+answers as part of its explicit Copilot-provider workflow.
+
+For an OpenAI-compatible provider, configure the standalone supervisor with
+both `MODEL_WORKLOG_RAG_URL` and `MODEL_WORKLOG_RAG_MODEL`; provide an optional
+`MODEL_WORKLOG_RAG_API_KEY` through the operator's secret manager. The endpoint
+must use HTTPS or loopback HTTP, with no URL credentials, query, or fragment.
+Redirects are refused. Embedded collectors can inject a `LogAnswerGenerator` or
+use the exported `OpenAiLogAnswerGenerator` or `CopilotLogAnswerGenerator` strategy.
+
+```sh
+export MODEL_WORKLOG_RAG_URL='http://127.0.0.1:11434/v1/chat/completions'
+export MODEL_WORKLOG_RAG_MODEL='your-installed-model'
+npm run supervisor
+```
+
+Model requests send the question, bounded recent history, redacted authorized
+evidence, and exact aggregates to the selected provider. This includes count
+questions: the AI explains the SQL results rather than counting sampled records.
+An empty corpus can produce an honest insufficient-evidence reply, not an invented
+answer. Metadata-only capture and excluded content remain excluded.
+
+Copilot runs in a private empty temporary working directory with an empty
+available-tool set, denied `shell`, `write`, and `url` permission kinds, disabled
+built-in MCPs/custom instructions, no user-interaction tools, and no remote export.
+Evidence is supplied through a bounded prompt because the qualified CLI prompt
+mode does not consume piped JSON context. The installed CLI must support those
+flags. The answerer does not reuse the workspace-review agent's tool permissions.
+Copilot remains a trusted local provider process, not an OS sandbox; its own
+authenticated account and private session storage are governed by Copilot.
+
+Generation has a 45-second deadline, two concurrent slots per provider instance,
+and a 64 KiB output limit. Copilot prompt context is capped at 128 KiB. Source
+excerpts supplied to a model have a combined 24,000-character budget and disclose
+shortening. OpenAI-compatible output uses strict JSON; Copilot uses Markdown with
+validated citation IDs. Timeouts, provider errors, or unknown/missing citations
+fall back to an explicitly labelled local evidence answer without exposing raw
+provider errors or credentials. Cancellation aborts the HTTP request and signals
+the Copilot child, with a bounded forced-stop grace period.
+
+Markdown is rendered with Marked and DOMPurify. Scripts, images, event handlers,
+unsafe links, forms, and embedded executable content are not rendered. Model
+interpretations can still be wrong: citation validation checks source identities,
+not whether every statement logically follows from its source.
+
+## Architecture And Operational Limits
+
+- **Domain:** immutable query plans, pluggable planning strategies, evidence
+  composition, and repository/admission/generation/interceptor interfaces.
+- **Application:** validated scope, admission, retrieval orchestration,
+  optional synthesis, cancellation, and answer/citation validation.
+- **Infrastructure:** parameterized SQLite analytics, an external-content FTS5
+  index, bounded local admission, and separate restricted Copilot/HTTP strategies.
+- **Adapters:** the existing authenticated HTTP boundary, CLI, native VS Code
+  command, and same-origin dashboard proxy. Authentication is not reimplemented.
+
+Persistence interceptors update the index in the same transaction as span
+revisions, deletion, and retention. Conflicts and failed batches roll back the
+index too. First startup indexes existing spans transactionally; later startups
+reuse it. FTS secure deletion is enabled. Indexes need extra disk headroom inside
+the collector's existing physical page ceiling; capacity errors are explicit.
+
+Some supported SQLite builds, including stock Node 22.13.0, do not include FTS5.
+They use a disclosed `sqlite-scan` strategy: bounded literal-term matching ordered
+by recency, not BM25 ranking. It is slower on large stores. Exact tool aggregates
+remain unchanged. Writes on a non-FTS runtime mark an existing index dirty; a
+later FTS-capable startup rebuilds it transactionally before indexed reads.
+
+FTS5 is **lexical**, not an embedding/vector semantic search engine. Queries use
+at most 12 distinct terms of 80 characters, safely quoted rather than interpreted
+as FTS syntax. Conversational strategies prioritize requests, responses, files,
+usage, overview, and chronology. Contextual expansion can include relevant scoped
+records that were not literal keyword matches; `contextExpanded` discloses this.
+No universal semantic-recall claim is made. Full text is already redacted at intake; retrieval does not bypass
+privacy or recover discarded content. Questions are limited to 2,000 characters,
+citations to 20 bounded excerpts, and local admission to 30 queries per credential
+per minute with at most 1,024 active credential windows. Admission affects only
+queries, not capture, authentication, or normal trace reads.
+
+Exact tool counts are distinct retained `kind: tool` span identities, including
+running, interrupted, failed, and completed attempts. Revisions/retries of the
+same span are not additional calls. Separate spans representing the same external
+call cannot be deduplicated automatically. Tool names use a bounded `tool.name`
+attribute when valid, otherwise the span name. Evidence is model-declared, not
+independent proof of execution; uninstrumented work and raw legacy sessions are
+outside this corpus. Existing retention, redaction, and partial capture can limit
+answers. No universal capture, sustained-load benchmark, Windows ACL parity,
+remote multi-tenancy, or compliance guarantee is implied.

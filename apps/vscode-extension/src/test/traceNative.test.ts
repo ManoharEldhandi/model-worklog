@@ -17,7 +17,7 @@ suite('Native trace views', () => {
 		assert.ok(extension);
 		await extension.activate();
 		const commands = await vscode.commands.getCommands(true);
-		for (const command of ['model-worklog.traces.focus', 'model-worklog.traceDetails.focus', 'model-worklog.sessions.focus', 'model-worklog.logDetails.focus', 'model-worklog.trace.configureSdk', 'model-worklog.startCopilotInteractiveSession']) {
+		for (const command of ['model-worklog.traces.focus', 'model-worklog.traceDetails.focus', 'model-worklog.sessions.focus', 'model-worklog.logDetails.focus', 'model-worklog.trace.configureSdk', 'model-worklog.trace.ask', 'model-worklog.startCopilotInteractiveSession']) {
 			assert.ok(commands.includes(command), command);
 		}
 		const manifest = JSON.parse(await readFile(join(__dirname, '..', '..', 'package.json'), 'utf8')) as { contributes: { configuration: { properties: Record<string, { default?: unknown }> } } };

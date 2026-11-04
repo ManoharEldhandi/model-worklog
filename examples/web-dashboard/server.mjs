@@ -6,17 +6,24 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createLocalModelLogger, LocalSupervisorClient } from 'model-worklog-sdk';
-import { buildSessionLog, buildTraceLog, parseSessionEvent, redactAttributes, redactSensitiveText, TraceDetailSchema } from 'model-worklog-schema';
-import { createTraceCredential, startSupervisor } from 'model-worklog-supervisor';
+import { buildSessionLog, buildTraceLog, LogQueryRequestSchema, parseSessionEvent, redactAttributes, redactSensitiveText, SpanIdSchema, TraceDetailSchema, TraceIdSchema } from 'model-worklog-schema';
+import { CopilotLogAnswerGenerator, createTraceCredential, OpenAiLogAnswerGenerator, startSupervisor } from 'model-worklog-supervisor';
+
+import { captureSampleReview } from './sampleCapture.mjs';
+import { projectActivitySpans, projectToolSpans } from './toolProjection.mjs';
 
 const PROJECT_ID = 'web-demo';
 const MAX_MESSAGE_LENGTH = 2_000;
-const MAX_REQUEST_BYTES = 16_384;
+const MAX_REQUEST_BYTES = 128 * 1024;
 const SAMPLE_WORKSPACE_FILES = ['README.md', 'src/inventory.ts', 'src/pricing.ts'];
 const COPILOT_MAX_DURATION_MS = 120_000;
 const STATIC_FILES = new Map([
 	['/', { file: 'index.html', contentType: 'text/html; charset=utf-8' }],
 	['/app.js', { file: 'app.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/markdown.js', { file: 'markdown.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/logConversation.js', { file: 'logConversation.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/vendor/marked.js', { file: '../../../node_modules/marked/lib/marked.esm.js', contentType: 'text/javascript; charset=utf-8' }],
+	['/vendor/purify.js', { file: '../../../node_modules/dompurify/dist/purify.es.mjs', contentType: 'text/javascript; charset=utf-8' }],
 	['/styles.css', { file: 'styles.css', contentType: 'text/css; charset=utf-8' }],
 	['/logo.png', { file: '../../../apps/vscode-extension/media/model-logger.png', contentType: 'image/png' }],
 ]);
@@ -29,7 +36,21 @@ function responseBody(response) {
 	return JSON.stringify(response);
 }
 
+class DashboardHttpError extends Error {
+	constructor(statusCode, message) { super(message); this.statusCode = statusCode; }
+}
+
+function guardRequest(request) {
+	const allowed = ['127.0.0.1', 'localhost', '[::1]'].map((host) => `${host}:${request.socket.localPort}`);
+	const host = request.headers.host;
+	if (!allowed.includes(host) || (request.headers.origin !== undefined && request.headers.origin !== `http://${host}`)
+		|| ['cross-site', 'same-site'].includes(request.headers['sec-fetch-site'])) {
+		throw new DashboardHttpError(403, 'Only same-origin loopback requests are permitted.');
+	}
+}
+
 function sendJson(response, statusCode, body) {
+	if (response.destroyed || response.writableEnded) { return; }
 	const payload = responseBody(body);
 	response.writeHead(statusCode, {
 		'cache-control': 'no-store',
@@ -38,6 +59,7 @@ function sendJson(response, statusCode, body) {
 		'content-type': 'application/json; charset=utf-8',
 		'referrer-policy': 'no-referrer',
 		'x-content-type-options': 'nosniff',
+		...(statusCode >= 400 ? { connection: 'close' } : {}),
 	});
 	response.end(payload);
 }
@@ -61,17 +83,27 @@ function sendError(response, statusCode, message) {
 }
 
 async function readRequestBody(request) {
+	if (!/^application\/json(?:\s*;\s*charset=(?:utf-8|"utf-8"))?\s*$/i.test(request.headers['content-type'] ?? '')) {
+		throw new DashboardHttpError(400, 'Content-Type application/json is required.');
+	}
+	const length = request.headers['content-length'];
+	if (length !== undefined && (!/^[0-9]+$/.test(length) || Number(length) > MAX_REQUEST_BYTES)) { throw new DashboardHttpError(413, 'Request body is too large.'); }
 	const chunks = [];
 	let bytes = 0;
 	for await (const chunk of request) {
 		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 		bytes += buffer.length;
 		if (bytes > MAX_REQUEST_BYTES) {
-			throw new Error('Request body is too large.');
+			throw new DashboardHttpError(413, 'Request body is too large.');
 		}
 		chunks.push(buffer);
 	}
-	return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+	try {
+		return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)), (key, value) => {
+			if (['__proto__', 'constructor', 'prototype'].includes(key)) { throw new Error('Unsafe key.'); }
+			return value;
+		});
+	} catch { throw new DashboardHttpError(400, 'Expected valid UTF-8 JSON without prototype keys.'); }
 }
 
 function addEvent(run, kind, payload, correlationId) {
@@ -179,7 +211,7 @@ async function requestModel(message, provider) {
 	return providerResponse(await response.json(), provider);
 }
 
-async function supervisorRequest(collector, token, pathname, method, body) {
+async function supervisorRequest(collector, token, pathname, method, body, options = {}) {
 	const response = await fetch(new URL(pathname, collector.url), {
 		method,
 		headers: {
@@ -187,10 +219,11 @@ async function supervisorRequest(collector, token, pathname, method, body) {
 			...(body === undefined ? {} : { 'content-type': 'application/json' }),
 		},
 		...(body === undefined ? {} : { body: JSON.stringify(body) }),
+		signal: AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? 10_000), ...(options.signal === undefined ? [] : [options.signal])]),
 	});
 	const payload = await response.json();
 	if (!response.ok) {
-		throw new Error(payload?.error?.message ?? `Supervisor returned HTTP ${response.status}.`);
+		throw new DashboardHttpError(response.status, payload?.error?.message ?? `Supervisor returned HTTP ${response.status}.`);
 	}
 	return payload;
 }
@@ -248,7 +281,7 @@ function copilotTask(message) {
 	].join('\n\n');
 }
 
-async function requestCopilotReview(run, context, recordTraceEvent) {
+async function requestCopilotReview(run, context, recordTraceEvent, parent) {
 	recordTraceEvent('copilot.review.started', { workspace: 'isolated-copy' });
 	const started = await supervisorRequest(context.collector, context.collectorToken, '/v1/copilot-sessions', 'POST', {
 		maxDurationMs: COPILOT_MAX_DURATION_MS,
@@ -285,6 +318,10 @@ async function requestCopilotReview(run, context, recordTraceEvent) {
 	const completed = await supervisorRequest(context.collector, context.collectorToken, `/v1/sessions/${encodeURIComponent(sessionId)}`, 'GET');
 	const session = value(completed, 'session');
 	const state = text(value(session, 'state'));
+	const projected = [...projectToolSpans(run.copilotEvents, { projectId: PROJECT_ID, parent }), ...projectActivitySpans(run.log, { projectId: PROJECT_ID, parent })];
+	for (let offset = 0; offset < projected.length; offset += 100) {
+		await supervisorRequest(context.collector, context.writerToken, '/v2/traces/batch', 'POST', { schemaVersion: 1, spans: projected.slice(offset, offset + 100) });
+	}
 	if (state !== 'completed') {
 		throw new Error(`Copilot session ended with state ${state ?? 'unknown'}. Run copilot login if authentication is required.`);
 	}
@@ -302,13 +339,16 @@ async function requestCopilotReview(run, context, recordTraceEvent) {
 }
 
 async function loadTrace(collector, readerToken, traceId) {
-	const response = await fetch(new URL(`/v2/traces/${traceId}?projectId=${PROJECT_ID}`, collector.url), {
-		headers: { 'x-model-worklog-token': readerToken },
-	});
-	if (!response.ok) {
-		throw new Error(`Trace readback returned HTTP ${response.status}.`);
+	const spans = [];
+	let cursor;
+	for (let page = 0; page < 20; page += 1) {
+		const params = new URLSearchParams({ projectId: PROJECT_ID, limit: '1000', ...(cursor === undefined ? {} : { cursor }) });
+		const payload = TraceDetailSchema.parse(await supervisorRequest(collector, readerToken, `/v2/traces/${traceId}?${params}`, 'GET'));
+		spans.push(...payload.spans);
+		if (payload.nextCursor === null) { return { schemaVersion: 1, spans, nextCursor: null }; }
+		cursor = payload.nextCursor;
 	}
-	return TraceDetailSchema.parse(await response.json());
+	throw new Error('Trace readback exceeded the bounded page limit.');
 }
 
 async function executeRun(run, context) {
@@ -336,10 +376,10 @@ async function executeRun(run, context) {
 				input: { message: run.message },
 				kind: 'model',
 				name: 'model.chat.completions',
-				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, responseLength: reply.content.length }),
+				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, response: reply.content }),
 			}, async (modelSpan) => {
 				const reply = context.provider.kind === 'copilot'
-					? await requestCopilotReview(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes))
+					? await requestCopilotReview(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context)
 					: await requestModel(run.message, context.provider);
 				modelSpan.setAttributes({ ...(reply.model === undefined ? {} : { 'model.name': reply.model }), 'provider.name': reply.provider, 'response.mode': reply.mode });
 				modelSpan.addEvent('response.received', { mode: reply.mode, responseLength: reply.content.length });
@@ -416,6 +456,23 @@ function publicRun(run) {
 	};
 }
 
+async function executeSampleRun(run, context) {
+	try {
+		const result = await captureSampleReview({ endpoint: context.collector.url, token: context.writerToken, projectId: PROJECT_ID, workspacePath: context.workspacePath, onEvent: (kind, payload, correlationId) => addEvent(run, kind, payload, correlationId) });
+		run.traceId = result.traceId;
+		run.delivery = result.delivery;
+		run.storedTrace = await loadTrace(context.collector, context.readerToken, result.traceId);
+		run.trace = summarizeTrace(run.storedTrace);
+		run.response = 'Sample capture complete: 120 file reads, one workspace search, and one handled stock validation failure.';
+		run.status = 'completed';
+		addEvent(run, 'session.completed', {});
+	} catch (error) {
+		run.status = 'failed';
+		run.error = redactSensitiveText(error instanceof Error ? error.message : 'Sample capture failed.');
+		addEvent(run, 'session.failed', { message: run.error });
+	}
+}
+
 function downloadRun(run) {
 	return {
 		exportedAt: new Date().toISOString(),
@@ -435,10 +492,19 @@ function downloadRun(run) {
 	};
 }
 
-function publicConfig(provider) {
+function rememberRun(runs, run) {
+	for (const [id, previous] of runs) {
+		if (runs.size < 20) { break; }
+		if (previous.status !== 'running') { runs.delete(id); }
+	}
+	runs.set(run.id, run);
+}
+
+function publicConfig(provider, modelSynthesis) {
 	return {
 		collector: 'temporary local collector',
 		mode: provider.kind,
+		modelSynthesis,
 		provider: provider.kind === 'copilot' ? 'GitHub Copilot CLI' : provider.kind === 'offline-demo' ? 'Built-in demo responder' : 'OpenAI-compatible endpoint',
 		workspace: { files: SAMPLE_WORKSPACE_FILES, label: 'Harbor Inventory isolated workspace copy' },
 	};
@@ -455,6 +521,9 @@ export async function startWebDashboard(options = {}) {
 		kind: providerKind,
 		model: options.model ?? (providerKind === 'openai-compatible' ? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini' : undefined),
 	};
+	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'copilot'
+		? new CopilotLogAnswerGenerator({ model: provider.model })
+		: provider.kind === 'openai-compatible' && provider.endpoint !== undefined ? new OpenAiLogAnswerGenerator({ endpoint: provider.endpoint, model: provider.model, apiKey: provider.apiKey }) : undefined);
 	const sampleWorkspacePath = await realpath(fileURLToPath(new URL('./sample-workspace', import.meta.url)));
 	const workspacePath = await mkdtemp(join(tmpdir(), 'model-worklog-dashboard-workspace-'));
 	await cp(sampleWorkspacePath, workspacePath, { recursive: true });
@@ -464,6 +533,7 @@ export async function startWebDashboard(options = {}) {
 		port: 0,
 		tracePrivacy: { mode: 'redacted-content' },
 		copilotRelayFactory: options.copilotRelayFactory,
+		logAnswerGenerator,
 	});
 	const [writer, reader] = await Promise.all([
 		createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'writer', url: collector.url }),
@@ -471,12 +541,52 @@ export async function startWebDashboard(options = {}) {
 	]);
 	await supervisorRequest(collector, collector.authToken, '/v1/workspaces/trust', 'POST', { workspacePath });
 	const runs = new Map();
+	const activeQueries = new Set();
+	let activeSample;
 	const staticRoot = new URL('./public/', import.meta.url);
 	const server = createServer((request, response) => {
 		void (async () => {
+			guardRequest(request);
+			if ((request.url?.length ?? 0) > 4096) { throw new DashboardHttpError(400, 'Request URL is too long.'); }
 			const url = new URL(request.url ?? '/', 'http://localhost');
+			if (request.method === 'POST' && url.pathname === '/api/logs/query') {
+				if (url.search !== '') { throw new DashboardHttpError(400, 'Query parameters are not supported.'); }
+				const body = await readRequestBody(request);
+				if (body === null || typeof body !== 'object' || Array.isArray(body) || (body.projectId !== undefined && body.projectId !== PROJECT_ID)) { throw new DashboardHttpError(400, 'Only the demo project can be queried.'); }
+				const parsed = LogQueryRequestSchema.safeParse({ ...body, projectId: PROJECT_ID });
+				if (!parsed.success) { throw new DashboardHttpError(400, 'Enter a question of 1-2000 characters and valid scope filters.'); }
+				const cancellation = new AbortController();
+				activeQueries.add(cancellation);
+				const abort = () => cancellation.abort();
+				response.once('close', abort);
+				try {
+					sendJson(response, 200, await supervisorRequest(collector, reader.token, '/v2/logs/query', 'POST', parsed.data, { timeoutMs: 55_000, signal: cancellation.signal }));
+				} finally { activeQueries.delete(cancellation); response.removeListener('close', abort); }
+				return;
+			}
+			if (request.method === 'GET' && url.pathname === '/api/logs/evidence') {
+				if ([...url.searchParams.keys()].some((key) => !['traceId', 'spanId'].includes(key)) || [...url.searchParams.keys()].length !== 2) { throw new DashboardHttpError(400, 'Expected exactly traceId and spanId.'); }
+				const trace = TraceIdSchema.safeParse(url.searchParams.get('traceId'));
+				const span = SpanIdSchema.safeParse(url.searchParams.get('spanId'));
+				if (!trace.success || !span.success) { throw new DashboardHttpError(400, 'Invalid evidence identifiers.'); }
+				const detail = await loadTrace(collector, reader.token, trace.data);
+				const source = detail.spans.find((stored) => stored.span.spanId === span.data);
+				if (source === undefined) { throw new DashboardHttpError(404, 'The evidence span is no longer retained.'); }
+				sendJson(response, 200, source);
+				return;
+			}
+			if (request.method === 'POST' && url.pathname === '/api/logs/sample') {
+				const body = await readRequestBody(request);
+				if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) { throw new DashboardHttpError(400, 'Sample capture expects an empty object.'); }
+				if ([...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'A capture is already running.'); }
+				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message: 'Inventory sample capture', status: 'running' };
+				rememberRun(runs, run);
+				activeSample = executeSampleRun(run, { collector, writerToken: writer.token, readerToken: reader.token, workspacePath }).finally(() => { activeSample = undefined; });
+				sendJson(response, 202, { runId: run.id });
+				return;
+			}
 			if (request.method === 'GET' && url.pathname === '/api/config') {
-				sendJson(response, 200, publicConfig(provider));
+				sendJson(response, 200, publicConfig(provider, logAnswerGenerator !== undefined));
 				return;
 			}
 			if (request.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/download')) {
@@ -504,6 +614,7 @@ export async function startWebDashboard(options = {}) {
 			}
 			if (request.method === 'POST' && url.pathname === '/api/chat') {
 				const body = await readRequestBody(request);
+				if ([...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'A capture is already running.'); }
 				const message = typeof body?.message === 'string' ? body.message.trim() : '';
 				if (message === '' || message.length > MAX_MESSAGE_LENGTH) {
 					sendError(response, 400, `message must contain 1 to ${MAX_MESSAGE_LENGTH} characters.`);
@@ -511,7 +622,7 @@ export async function startWebDashboard(options = {}) {
 				}
 				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message, status: 'running' };
 				addEvent(run, 'agent.message', { role: 'user', text: message });
-				runs.set(run.id, run);
+				rememberRun(runs, run);
 				void executeRun(run, { collector, collectorToken: collector.authToken, provider, readerToken: reader.token, workspacePath, writerToken: writer.token }).catch((error) => {
 					run.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
 					run.status = 'failed';
@@ -536,14 +647,19 @@ export async function startWebDashboard(options = {}) {
 			});
 			response.end(contents);
 		})().catch((error) => {
+			request.resume();
 			if (!response.headersSent) {
-				sendError(response, 500, error instanceof Error ? error.message : 'Unexpected server error.');
+				sendError(response, error instanceof DashboardHttpError ? error.statusCode : 500, error instanceof DashboardHttpError ? error.message : 'The local dashboard request failed.');
 			} else {
 				response.destroy();
 			}
 		});
 	});
 
+	server.headersTimeout = 10_000;
+	server.requestTimeout = 15_000;
+	server.keepAliveTimeout = 5_000;
+	server.maxConnections = 64;
 	await new Promise((resolve, reject) => {
 		server.once('error', reject);
 		server.listen(options.port ?? 0, '127.0.0.1', () => {
@@ -559,7 +675,11 @@ export async function startWebDashboard(options = {}) {
 				return;
 			}
 			closed = true;
-			await new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+			for (const cancellation of activeQueries) { cancellation.abort(); }
+			const stopped = new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+			server.closeAllConnections();
+			await stopped;
+			await activeSample;
 			await collector.close();
 			await rm(workspacePath, { force: true, recursive: true });
 			await rm(dataDirectory, { force: true, recursive: true });

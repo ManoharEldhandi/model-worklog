@@ -3,6 +3,7 @@ import { TraceApi, canAccessTrace } from './traceApi';
 import { TraceCommands, traceProject } from './traceCommands';
 import { TraceController } from './traceController';
 import { TraceDetailsView } from './traceDetailsView';
+import { TraceQueryCommand } from './traceQueryCommand';
 import { TraceSidebar, type TraceTreeItem } from './traceSidebar';
 
 export class TraceFeature implements vscode.Disposable {
@@ -18,7 +19,7 @@ export class TraceFeature implements vscode.Disposable {
 			this.detailsVisible = visible;
 			this.controller.setVisible(this.tree.visible || visible);
 		}, () => { void this.controller.loadMoreSpans(); });
-		this.disposables = [sidebar, this.tree, details, new TraceCommands(this.controller, details),
+		this.disposables = [sidebar, this.tree, details, new TraceCommands(this.controller, details), new TraceQueryCommand(this.controller),
 			vscode.window.registerWebviewViewProvider('model-worklog.traceDetails', details, { webviewOptions: { retainContextWhenHidden: true } }),
 			this.tree.onDidChangeVisibility(() => this.controller.setVisible(this.tree.visible || this.detailsVisible)),
 			this.controller.subscribe((state) => {

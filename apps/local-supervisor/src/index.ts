@@ -16,3 +16,6 @@ export { launchDetachedSupervisor, supervisorEntrypointPath, type DetachedSuperv
 export { createTraceCredential, type CreateTraceCredentialOptions } from './traces/bootstrap';
 export type { TraceCredential, TraceStorageOptions } from './traces/domain/contracts';
 export type { TraceRequestHandler } from './traces/http';
+export type { LogAnswerGenerator } from './traces/domain/logQuery';
+export { OpenAiLogAnswerGenerator, type OpenAiLogAnswerOptions } from './traces/infrastructure/logAnswerGenerator';
+export { CopilotLogAnswerGenerator, type CopilotLogAnswerOptions } from './traces/infrastructure/copilotLogAnswerGenerator';

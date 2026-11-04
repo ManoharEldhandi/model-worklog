@@ -1,15 +1,16 @@
 import {
 	buildTraceLog,
-	ProjectIdSchema, TraceDetailSchema, TraceIdSchema, TraceListSchema, TraceSpanSchema,
-	type TracePrincipal,
+	LogQueryRequestSchema, ProjectIdSchema, TraceDetailSchema, TraceIdSchema, TraceListSchema, TraceSpanSchema,
+	type LogQueryRequest, type TracePrincipal,
 } from 'model-worklog-schema';
 
 import { TraceError, type CursorCodec, type TraceRepository } from '../domain/contracts';
 import { TraceCredentials, requireProject, requireRole } from './credentials';
 import { TraceIntake } from './intake';
+import { LogQueryService } from './logQuery';
 
 export type TraceOperation = { kind: 'identity' } | { kind: 'credential-create' } | { kind: 'batch' } | { kind: 'otlp' }
-	| { kind: 'list' } | { kind: 'retention' } | { kind: 'credential-revoke'; id: string }
+	| { kind: 'list' } | { kind: 'retention' } | { kind: 'log-query' } | { kind: 'credential-revoke'; id: string }
 	| { kind: 'detail'; id: string } | { kind: 'log'; id: string } | { kind: 'delete'; id: string };
 
 export interface TraceApiResult { readonly statusCode: number; readonly body: unknown }
@@ -40,13 +41,14 @@ function limit(input: unknown, fallback: number, maximum: number): number {
 }
 
 function operation(method: string, pathname: string): TraceOperation {
-	const fixed: Record<string, { method: string; kind: 'identity' | 'credential-create' | 'batch' | 'otlp' | 'list' | 'retention' }> = {
+	const fixed: Record<string, { method: string; kind: 'identity' | 'credential-create' | 'batch' | 'otlp' | 'list' | 'retention' | 'log-query' }> = {
 		'/v1/traces': { method: 'POST', kind: 'otlp' },
 		'/v2/identity': { method: 'GET', kind: 'identity' },
 		'/v2/credentials': { method: 'POST', kind: 'credential-create' },
 		'/v2/traces/batch': { method: 'POST', kind: 'batch' },
 		'/v2/traces': { method: 'GET', kind: 'list' },
 		'/v2/traces/retention': { method: 'POST', kind: 'retention' },
+		'/v2/logs/query': { method: 'POST', kind: 'log-query' },
 	};
 	const exact = fixed[pathname];
 	if (exact !== undefined) {
@@ -77,12 +79,13 @@ export class TraceApi {
 		private readonly cursors: CursorCodec,
 		private readonly now: () => Date,
 		private readonly retentionTtlSeconds?: number,
+		private readonly logQueries?: LogQueryService,
 	) {}
 
 	authorize(principal: TracePrincipal, method: string, pathname: string): TraceOperation {
 		const selected = operation(method, pathname);
 		if (selected.kind === 'batch' || selected.kind === 'otlp') { requireRole(principal, ['writer', 'admin']); }
-		else if (selected.kind === 'list' || selected.kind === 'detail' || selected.kind === 'log') { requireRole(principal, ['reader', 'admin']); }
+		else if (selected.kind === 'list' || selected.kind === 'detail' || selected.kind === 'log' || selected.kind === 'log-query') { requireRole(principal, ['reader', 'admin']); }
 		else if (selected.kind !== 'identity') { requireRole(principal, ['admin']); }
 		return selected;
 	}
@@ -90,6 +93,11 @@ export class TraceApi {
 	otlpProject(principal: TracePrincipal, input: unknown): string {
 		requireRole(principal, ['writer', 'admin']);
 		return project(principal, input === undefined && principal.role === 'writer' && principal.projects.length === 1 ? principal.projects[0] : input);
+	}
+
+	async query(principal: TracePrincipal, query: URLSearchParams, body: unknown, signal?: AbortSignal): Promise<TraceApiResult> {
+		const request = this.queryRequest(principal, query, body);
+		return { statusCode: 200, body: await this.logQueries!.askWithSynthesis(principal.id, request, signal) };
 	}
 
 	handle(selected: TraceOperation, principal: TracePrincipal, query: URLSearchParams, body: unknown): TraceApiResult {
@@ -125,8 +133,22 @@ export class TraceApi {
 			case 'otlp':
 				this.intake.ingest(principal, body);
 				return { statusCode: 200, body: {} };
+			case 'log-query': {
+				const request = this.queryRequest(principal, query, body);
+				return { statusCode: 200, body: this.logQueries!.ask(principal.id, request) };
+			}
 			case 'retention': return { statusCode: 200, body: { schemaVersion: 1, ...this.retention(principal, body) } };
 		}
+	}
+
+	private queryRequest(principal: TracePrincipal, query: URLSearchParams, body: unknown): LogQueryRequest {
+		requireRole(principal, ['reader', 'admin']);
+		fields(query, []);
+		const parsed = LogQueryRequestSchema.safeParse(body);
+		if (!parsed.success) { throw new TraceError(400, 'invalid_log_query', 'Expected a projectId, a 1-2000 character question, optional traceId/toolName/since/until, intent, synthesis, and limit (1-20).'); }
+		project(principal, parsed.data.projectId);
+		if (this.logQueries === undefined) { throw new TraceError(503, 'query_unavailable', 'Log queries are not configured.'); }
+		return parsed.data;
 	}
 
 	private retention(principal: TracePrincipal, body: unknown): { deleted: number; hasMore: boolean } {

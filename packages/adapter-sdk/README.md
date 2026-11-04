@@ -1,8 +1,8 @@
 # model-worklog-sdk
 
-Node.js >=22.13 SDK for explicit local tracing. This reference targets **2.1.0**.
-GitHub source/VSIX releases and npm publication are separate. Use the checkout
-until the operator publishes `model-worklog-sdk@2.1.0` to the registry.
+Node.js >=22.13 SDK for explicit local tracing. The core SDK is published as
+**2.1.0**. The new `model-worklog-sdk/rag` module is available from the
+`feat/local-log-rag` source checkout and is not yet in that registry release.
 
 ## Local Setup
 
@@ -43,6 +43,40 @@ Endpoint precedence is `endpoint`, `MODEL_WORKLOG_TRACE_ENDPOINT`, then
 `MODEL_WORKLOG_SUPERVISOR_URL`; the fallback is
 `http://127.0.0.1:43199/v2/traces/batch`. Pass a loopback HTTP origin or that exact
 path, without credentials/query/fragment. Redirects and remote hosts are rejected; do not port-forward.
+
+## Embeddings And Hybrid Log RAG
+
+Import `LogRag`, `LogRagTraceExporter`, `ChromaLogVectorStore`,
+`OpenAiLogEmbedder`, and `HttpLogRagReranker` from **`model-worklog-sdk/rag`**.
+This optional module indexes SDK spans or collector reader snapshots in Chroma,
+then combines cosine HNSW search, BM25, RRF and optional reranking. Your
+application owns authorization and index retention; VS Code is not required.
+Embedding, store, source, reranking and answer-generation ports are replaceable.
+
+Follow the [working local setup and integration example](../../docs/sdk-rag.md)
+and [measured precision/recall checks](../../docs/rag-evaluation.md).
+
+## Existing Collector Queries
+
+Use a separate reader/admin credential for queries:
+
+```ts
+import { LocalSupervisorClient } from 'model-worklog-sdk';
+
+const client = await LocalSupervisorClient.fromLocalEnvironment();
+const answer = await client.askLogs({
+  projectId: 'my-project', question: 'What failed?',
+}, { signal: AbortSignal.timeout(55_000) });
+console.log(answer.answer);
+```
+
+The client reads `MODEL_WORKLOG_TOKEN`, otherwise the private operator credential.
+A tracing writer cannot read logs. Queries default to local evidence; explicit
+`synthesis: 'model'` uses an operator-configured provider. Optional `traceId`,
+`toolName`, `since`, `until`, and bounded `history` narrow or contextualize a query.
+Responses retain exact counts, source revisions, capture limitations, and
+generation/fallback status. Response scope and the 1 MiB body bound are validated.
+See [log retrieval](../../docs/log-retrieval.md).
 
 ## Span API
 

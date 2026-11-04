@@ -1,3 +1,4 @@
+import { askCommand } from './commands/ask';
 import { costCommand } from './commands/cost';
 import { exportEvidenceBundleCommand, verifyEvidenceBundleCommand } from './commands/evidenceBundle';
 import { doctorCommand } from './commands/doctor';
@@ -40,6 +41,7 @@ Commands:
 	verify <file>          Verify an evidence bundle manifest through the supervisor
 	sessions list          List retained sessions
 	logs <session-id>      Render one session as a timeline
+	ask "question"        Query retained traces with exact tool counts and citations
 
 Options:
   --supervisor-url <url> Loopback supervisor URL (default ${DEFAULT_SUPERVISOR_URL})
@@ -53,6 +55,14 @@ Options:
 	--command <fragment>   Filter watch events by command fragment
 	--interval-ms <n>      Watch polling interval (default 250)
 	--once                 Fetch one watch snapshot and exit
+	--project <id>         Explicit project for ask
+	--trace <id>           Restrict ask to one trace
+	--tool <name>          Restrict ask to an exact tool name
+	--since / --until <ISO> Restrict ask by span start time (inclusive)
+	--intent <name>        auto, tools, failures, or search for ask
+	--synthesis <mode>     extractive (local default) or model (explicit provider opt-in)
+	--limit <1-20>         Maximum evidence citations for ask (default 8)
+	--conversation <file>  Keep bounded redacted ask history in a private local file
   --require-supervisor   Make doctor fail when the supervisor is unavailable
   --version, -V          Print the CLI version
   --help, -h             Show this help
@@ -98,6 +108,14 @@ export async function runCli(environment: CliEnvironment): Promise<number> {
 
 	const command = positionals[0];
 	switch (command) {
+		case 'ask':
+			return askCommand(context, positionals.slice(1).join(' '), {
+				projectId: optionString(options, 'project'), traceId: optionString(options, 'trace'),
+				toolName: optionString(options, 'tool'), since: optionString(options, 'since'), until: optionString(options, 'until'),
+				intent: optionString(options, 'intent'), limit: optionString(options, 'limit'),
+				synthesis: optionString(options, 'synthesis'),
+				conversation: optionString(options, 'conversation'),
+			});
 		case 'doctor':
 			return doctorCommand(context, { requireSupervisor: optionFlag(options, 'require-supervisor') });
 		case 'supervisor': {

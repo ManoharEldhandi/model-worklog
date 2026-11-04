@@ -23,3 +23,6 @@ model-worklog*.bundle.json
 *.tgz
 artifacts/
 .eslintcache
+output/playwright/
+output/rag/
+.venv*/

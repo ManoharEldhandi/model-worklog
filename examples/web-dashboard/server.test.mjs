@@ -65,6 +65,26 @@ test('web dashboard records a browser interaction as nested SDK spans', async (t
 	assert.equal('token' in exported, false);
 });
 
+test('dashboard shutdown cancels outstanding log answers without waiting for the model deadline', async () => {
+	let started;
+	const ready = new Promise((resolve) => { started = resolve; });
+	let cancelled = false;
+	const dashboard = await startWebDashboard({ provider: 'offline-demo', logAnswerGenerator: {
+		async generate(_question, _evidence, signal) {
+			started();
+			return new Promise((_resolve, reject) => signal.addEventListener('abort', () => { cancelled = true; reject(signal.reason); }, { once: true }));
+		},
+	} });
+	const controller = new AbortController();
+	const pending = fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Summarize', synthesis: 'model' }), signal: controller.signal }).catch(() => undefined);
+	await ready;
+	let closed = false;
+	const closing = dashboard.close().then(() => { closed = true; });
+	const deadline = setTimeout(() => controller.abort(), 1_000);
+	try { await closing; assert.equal(cancelled, true); assert.equal(controller.signal.aborted, false, 'Shutdown must finish before the cleanup deadline.'); }
+	finally { clearTimeout(deadline); controller.abort(); await pending; if (!closed) { await closing; } }
+});
+
 test('dashboard groups native read lifecycles and retains MCP results and their raw source references', async (testContext) => {
 	const dashboard = await startWebDashboard({ provider: 'copilot', copilotRelayFactory: (sink, options, onFinished) => ({
 		async start() {
@@ -101,6 +121,56 @@ test('dashboard groups native read lifecycles and retains MCP results and their 
 	assert.ok(mcp.details.some((detail) => detail.value === 'Inventory reference found'));
 	const exported = await fetch(new URL(`/api/runs/${runId}/download`, dashboard.url)).then((response) => response.json());
 	assert.ok(reads[0].sources.every((source) => exported.sourceEvents.some((event) => event.eventId === source.id)));
+	const answer = await fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'How many times was read_file used?', traceId: run.traceId }) }).then((response) => response.json());
+	assert.equal(answer.totals.toolCalls, 100);
+	assert.equal(answer.tools[0].name, 'read_file');
+	assert.equal(answer.evidence.length, 8);
+	assert.equal(answer.retrieval.truncated, true);
+	assert.ok(answer.evidence.every((source) => source.serviceName === 'copilot-tool-projection'));
+});
+
+test('sample capture supports exact tool answers, failure retrieval, and retained evidence without model credentials', async (testContext) => {
+	const dashboard = await startWebDashboard({ provider: 'offline-demo' });
+	testContext.after(async () => dashboard.close());
+	const started = await fetch(new URL('/api/logs/sample', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+	assert.equal(started.status, 202);
+	const run = await waitForRun(dashboard.url, (await started.json()).runId);
+	assert.equal(run.status, 'completed');
+	assert.equal(run.trace.spanCount, 123);
+	const query = async (question) => {
+		const response = await fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, traceId: run.traceId }) });
+		assert.equal(response.status, 200);
+		return response.json();
+	};
+	const tools = await query('What tools were used?');
+	assert.equal(tools.totals.toolCalls, 122);
+	assert.equal(tools.tools.find((tool) => tool.name === 'read_file').calls, 120);
+	const specific = await query('How many times was read_file used?');
+	assert.equal(specific.totals.toolCalls, 120);
+	const failures = await query('What failed?');
+	assert.equal(failures.retrieval.matchedSpans, 1);
+	assert.match(failures.answer, /Stock quantity must not be negative/);
+	const source = failures.evidence[0];
+	const evidence = await fetch(new URL(`/api/logs/evidence?traceId=${source.traceId}&spanId=${source.spanId}`, dashboard.url)).then((response) => response.json());
+	assert.equal(evidence.span.spanId, source.spanId);
+	assert.equal(evidence.span.revision, source.revision);
+	assert.equal(JSON.stringify(tools).includes('token'), false);
+});
+
+test('dashboard query proxy rejects foreign origins, malformed requests, and project override attempts', async (testContext) => {
+	const dashboard = await startWebDashboard({ provider: 'offline-demo' });
+	testContext.after(async () => dashboard.close());
+	const path = new URL('/api/logs/query', dashboard.url);
+	const post = (body, headers = {}) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body });
+	assert.equal((await post('{"question":"tools"}', { origin: 'https://untrusted.example' })).status, 403);
+	assert.equal((await post('{"question":"tools"}', { 'sec-fetch-site': 'cross-site' })).status, 403);
+	assert.equal((await post('{"question":"tools","projectId":"other"}')).status, 400);
+	assert.equal((await post('{"question":"tools","limit":1000}')).status, 400);
+	assert.equal((await post('{"question":"tools","__proto__":{}}')).status, 400);
+	assert.equal((await post('{malformed')).status, 400);
+	assert.equal((await post('{}', { 'content-type': 'text/plain' })).status, 400);
+	assert.equal((await post('x'.repeat(131073))).status, 413);
+	assert.equal((await fetch(new URL('/api/logs/evidence?traceId=bad&spanId=bad', dashboard.url))).status, 400);
 });
 
 test('dashboard presentation and JSON export redact prompt secrets without changing model input', async (testContext) => {
@@ -176,4 +246,43 @@ test('dashboard consumes semantic backend logs without lifecycle spam, duplicate
 	assert.equal(run.activity.entries.filter((entry) => entry.category === 'usage').length, 1);
 	assert.equal(run.activity.entries.some((entry) => entry.category === 'lifecycle'), false);
 	assert.deepEqual(run.activity.entries.slice(0, 3).map((entry) => entry.category), ['response', 'files', 'reasoning-summary']);
+});
+
+test('log conversations retrieve actual replies, preserve follow-ups, and generate tool answers without re-running the workspace agent', async (testContext) => {
+	let reviews = 0;
+	let answers = 0;
+	const dashboard = await startWebDashboard({ provider: 'copilot', logAnswerGenerator: {
+		provider: 'test-conversation',
+		async generate(question, evidence, _signal, history) {
+			answers += 1;
+			assert.equal(evidence.scope.projectId, 'web-demo');
+			if (question.includes('answer')) {
+				assert.ok(evidence.evidence.some((source) => source.excerpt.includes('spring discount is 15 percent')));
+				const source = evidence.evidence.find((source) => source.excerpt.includes('spring discount is 15 percent'));
+				return { answer: `It said the spring discount is 15 percent. [${source.id}]`, sourceIds: [source.id] };
+			}
+			assert.equal(history[0].content, 'What did it answer?');
+			return { answer: `It made ${evidence.totals.toolCalls} recorded tool calls. [A1]`, sourceIds: ['A1'] };
+		},
+	}, copilotRelayFactory: (sink, options, onFinished) => ({
+		async start() {
+			reviews += 1;
+			await sink.append({ actor: 'copilot-cli', evidenceGrade: 'observed-native', correlationId: 'read', kind: 'tool.called', payload: { tool: 'view', arguments: { path: 'src/pricing.ts' } } });
+			await sink.append({ actor: 'copilot-cli', evidenceGrade: 'observed-native', correlationId: 'read', kind: 'tool.completed', payload: { tool: 'view', success: true, result: 'Pricing source' } });
+			await sink.append({ actor: 'copilot-cli', evidenceGrade: 'observed-native', kind: 'agent.message', payload: { role: 'assistant', text: 'The spring discount is 15 percent.' } });
+			await sink.complete('completed'); onFinished(options.sessionId);
+		}, async cancel() {}, async shutdown() {},
+	}) });
+	testContext.after(async () => dashboard.close());
+	const { runId } = await fetch(new URL('/api/chat', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Review pricing.' }) }).then((response) => response.json());
+	const run = await waitForRun(dashboard.url, runId);
+	const ask = (body) => fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ traceId: run.traceId, synthesis: 'model', ...body }) }).then((response) => response.json());
+	const first = await ask({ question: 'What did it answer?' });
+	assert.equal(first.generation.status, 'generated');
+	assert.match(first.answer, /spring discount/);
+	const followup = await ask({ question: 'And how many tools did it use?', history: [{ role: 'user', content: 'What did it answer?' }, { role: 'assistant', content: first.answer }] });
+	assert.equal(followup.generation.status, 'generated');
+	assert.match(followup.answer, /1 recorded tool calls/);
+	assert.equal(reviews, 1);
+	assert.equal(answers, 2);
 });

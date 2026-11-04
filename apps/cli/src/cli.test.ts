@@ -94,6 +94,32 @@ test('no arguments prints help to stderr and returns InvalidInvocation', async (
 	assert.match(result.stderr, /Usage:/);
 });
 
+test('ask conversation files preserve bounded redacted follow-ups and reject scope changes', async (context) => {
+	const directory = await mkdtemp(join(tmpdir(), 'worklog-conversation-'));
+	context.after(() => rm(directory, { recursive: true, force: true }));
+	const path = join(directory, 'chat.json');
+	let requests = 0;
+	const fetchImpl: FetchLike = async (_url, init) => {
+		const body = JSON.parse(init!.body!);
+		assert.equal(body.history.length, requests === 0 ? 0 : 2);
+		if (requests > 0) { assert.doesNotMatch(JSON.stringify(body.history), /private-question|private-answer/); }
+		requests += 1;
+		return new Response(JSON.stringify({ schemaVersion: 1, intent: 'tools', question: body.question, answer: 'Nothing recorded. token=private-answer', scope: { projectId: 'app' }, snapshotAt: '2026-10-20T00:00:00.000Z',
+			totals: { spans: 0, traces: 0, toolCalls: 0, failedSpans: 0, runningSpans: 0, metadataOnlySpans: 0, limitedSpans: 0 }, tools: [], evidence: [], retrieval: { strategy: 'exact-aggregate', matchedSpans: 0, returnedSpans: 0, truncated: false, toolsTruncated: false }, limitations: [] }));
+	};
+	const argv = ['ask', 'tools token=private-question', '--project', 'app', '--conversation', path];
+	assert.equal((await run(argv, fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' })).code, ExitCode.Ok);
+	assert.equal((await run(argv, fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' })).code, ExitCode.Ok);
+	const persisted = await readFile(path, 'utf8');
+	assert.doesNotMatch(persisted, /private-question|private-answer|test-token/);
+	assert.equal((JSON.parse(persisted) as { history: unknown[] }).history.length, 4);
+	assert.equal((await stat(path)).mode & 0o077, 0);
+	const wrong = await run(['ask', 'tools', '--project', 'other', '--conversation', path], fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' });
+	assert.equal(wrong.code, ExitCode.InvalidInvocation);
+	assert.equal(requests, 2);
+	assert.equal(await readFile(path, 'utf8'), persisted);
+});
+
 test('--help returns Ok and prints to stdout', async () => {
 	const result = await run(['--help']);
 	assert.equal(result.code, ExitCode.Ok);
@@ -214,6 +240,47 @@ test('logs renders a readable timeline and one canonical event per JSONL line', 
 	const lines = jsonl.stdout.trim().split('\n').map((line) => JSON.parse(line) as { sequence: number; kind: string });
 	assert.deepEqual(lines.map((line) => line.sequence), [1, 2, 3]);
 	assert.deepEqual(lines.map((line) => line.kind), ['agent.summary', 'tool.called', 'usage.reported']);
+});
+
+test('ask validates scope and bounds before issuing a request', async () => {
+	let requests = 0;
+	const fetchImpl: FetchLike = async () => { requests += 1; throw new Error('unexpected request'); };
+	for (const args of [[], ['tools'], ['tools', '--project', '*'], ['tools', '--project', 'project', '--limit', '21'], ['tools', '--project', 'project', '--intent', 'sql']]) {
+		const result = await run(['ask', ...args], fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' });
+		assert.equal(result.code, ExitCode.InvalidInvocation);
+		assert.match(result.stderr, /Usage:/);
+	}
+	assert.equal(requests, 0);
+});
+
+test('ask sends scoped read requests and supports pretty, JSON, and JSONL answers', async () => {
+	const response = {
+		schemaVersion: 1, intent: 'tools', answer: 'Recorded 120 tool calls.', scope: { projectId: 'project' }, snapshotAt: '2026-10-20T00:00:00.000Z',
+		totals: { spans: 120, traces: 1, toolCalls: 120, failedSpans: 0, runningSpans: 0, metadataOnlySpans: 120, limitedSpans: 0 },
+		tools: [], evidence: [], retrieval: { strategy: 'exact-aggregate', matchedSpans: 120, returnedSpans: 0, truncated: true, toolsTruncated: false },
+		limitations: ['Only captured records are counted.'],
+	};
+	const fetchImpl: FetchLike = async (input, init) => {
+		assert.equal(new URL(input).pathname, '/v2/logs/query');
+		assert.equal(init?.method, 'POST');
+		assert.equal(init?.headers?.['x-model-worklog-token'], 'reader-token');
+		assert.equal(JSON.parse(init?.body ?? '{}').projectId, 'project');
+		return new Response(JSON.stringify(response));
+	};
+	const env = { MODEL_WORKLOG_TOKEN: 'reader-token' };
+	const pretty = await run(['ask', 'What tools were used?', '--project', 'project', '--format', 'pretty'], fetchImpl, env);
+	assert.equal(pretty.code, ExitCode.Ok);
+	assert.match(pretty.stdout, /120 tool calls/);
+	assert.match(pretty.stdout, /Only captured records/);
+	const json = await run(['ask', 'tools', '--project', 'project', '--format', 'json'], fetchImpl, env);
+	assert.equal(JSON.parse(json.stdout).result.totals.toolCalls, 120);
+	const jsonl = await run(['ask', 'tools', '--project', 'project', '--format', 'jsonl'], fetchImpl, env);
+	assert.equal(JSON.parse(jsonl.stdout).retrieval.strategy, 'exact-aggregate');
+	const invalid = await run(['ask', 'tools', '--project', 'project'], jsonFetch({ ...response, scope: { projectId: 'other' } }), env);
+	assert.equal(invalid.code, ExitCode.Internal);
+	const denied = await run(['ask', 'tools', '--project', 'project'], jsonFetch({ error: { message: 'Forbidden project.' } }, 403), env);
+	assert.equal(denied.code, ExitCode.Unavailable);
+	assert.match(denied.stderr, /Forbidden project/);
 });
 
 test('watch sends resumable filters and renders one committed event per JSONL line', async () => {

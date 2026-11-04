@@ -1,12 +1,13 @@
 import { StoredTraceSpanSchema, TraceSummarySchema, type StoredTraceSpan, type TraceSummary } from 'model-worklog-schema';
 
 import { TraceError, type CleanupResult, type TracePage } from '../domain/contracts';
+import type { SpanPersistenceInterceptor } from '../domain/logQuery';
 import { TraceDatabase, integer, text } from './database';
 
 const MAX_PAGE_BYTES = 4 * 1024 * 1024;
 
 export class TraceQueries {
-	constructor(private readonly database: TraceDatabase) {}
+	constructor(private readonly database: TraceDatabase, private readonly interceptors: readonly SpanPersistenceInterceptor[] = []) {}
 
 	list(projectId: string, limit: number, after = Number.MAX_SAFE_INTEGER): TracePage<TraceSummary> {
 		return this.database.transaction(false, () => {
@@ -44,6 +45,7 @@ export class TraceQueries {
 			const row = this.database.statement('SELECT open_spans FROM traces WHERE project_id = ? AND trace_id = ?').get(projectId, traceId);
 			if (row === undefined) { return false; }
 			if (integer(row, 'open_spans') > 0) { throw new TraceError(409, 'trace_active', 'An active trace cannot be deleted.'); }
+			for (const interceptor of this.interceptors) { interceptor.beforeTraceDelete(projectId, traceId); }
 			this.database.statement('DELETE FROM traces WHERE project_id = ? AND trace_id = ?').run(projectId, traceId);
 			return true;
 		});
@@ -56,7 +58,10 @@ export class TraceQueries {
 	protected prune(projectId: string, before: string, limit: number, excluded: ReadonlySet<string> = new Set()): CleanupResult {
 		const candidates = this.database.statement('SELECT sequence, trace_id FROM traces WHERE project_id = ? AND retention_ready = 1 AND open_spans = 0 AND updated_at < ? ORDER BY updated_at, sequence LIMIT ?').all(projectId, before, limit + excluded.size + 1);
 		const rows = candidates.filter((row) => !excluded.has(text(row, 'trace_id')));
-		for (const row of rows.slice(0, limit)) { this.database.statement('DELETE FROM traces WHERE sequence = ?').run(integer(row, 'sequence')); }
+		for (const row of rows.slice(0, limit)) {
+			for (const interceptor of this.interceptors) { interceptor.beforeTraceDelete(projectId, text(row, 'trace_id')); }
+			this.database.statement('DELETE FROM traces WHERE sequence = ?').run(integer(row, 'sequence'));
+		}
 		return { deleted: Math.min(rows.length, limit), hasMore: rows.length > limit };
 	}
 }
