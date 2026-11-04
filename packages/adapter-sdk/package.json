@@ -36,7 +36,7 @@
     "test": "npm run build && tsc -p tsconfig.test.json && node --enable-source-maps --test \"test-dist/**/*.test.js\""
   },
   "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/core": "^2.12.0",
     "@opentelemetry/sdk-trace-base": "^2.12.0",
     "chromadb": "^3.5.0",
