@@ -1,5 +1,9 @@
 # Log Retrieval And Answers
 
+For Chroma HNSW, embeddings, BM25/RRF, application integration and measured
+retrieval quality, use the [SDK RAG guide](sdk-rag.md). This page describes the
+existing collector query endpoint and its compatibility clients.
+
 This feature is available from the source branch with matching locally built
 packages. It does not imply a new npm or Marketplace publication.
 

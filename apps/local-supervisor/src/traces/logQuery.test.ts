@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { LogQueryResponseSchema } from 'model-worklog-schema';
+import { LocalSupervisorClient } from 'model-worklog-sdk';
+import { CollectorLogSource } from 'model-worklog-sdk/rag';
 
 import { api, credential, fixture, traceSpan } from './fixtures.test';
 
@@ -34,6 +36,26 @@ test('authenticated log questions return exact counts, inferred tool scope, and 
 	const failures = LogQueryResponseSchema.parse(await (await api(supervisor, '/v2/logs/query', reader.token, 'POST', { projectId: 'project', question: 'Which tools failed?' })).json());
 	assert.equal(failures.retrieval.matchedSpans, 1);
 	assert.match(failures.answer, /\[S1\]/);
+});
+
+test('the public SDK queries retained logs with reader credentials and rejects a writer', async (context) => {
+	const { supervisor } = await fixture(context);
+	const reader = await credential(supervisor, 'reader');
+	const writer = await credential(supervisor, 'writer');
+	await api(supervisor, '/v2/traces/batch', writer.token, 'POST', { schemaVersion: 1, spans: [traceSpan({ kind: 'tool', name: 'lookup' })] });
+	const client = new LocalSupervisorClient({ supervisorUrl: supervisor.url, token: reader.token });
+	const answer = await client.askLogs({ projectId: 'project', question: 'What tools were used?' });
+	assert.equal(answer.totals.toolCalls, 1);
+	assert.equal(answer.tools[0]?.name, 'lookup');
+	assert.match(answer.answer, /\[A1\]/);
+	const traces = await client.listTraces('project');
+	assert.equal(traces.traces.length, 1);
+	const snapshot = await new CollectorLogSource(client).load({ projectId: 'project' }, AbortSignal.timeout(5000));
+	assert.equal(snapshot.complete, true);
+	assert.equal(snapshot.spans.length, 1);
+	assert.equal(snapshot.spans[0]?.span.name, 'lookup');
+	const denied = new LocalSupervisorClient({ supervisorUrl: supervisor.url, token: writer.token });
+	await assert.rejects(denied.askLogs({ projectId: 'project', question: 'tools' }), { statusCode: 403 });
 });
 
 test('log query authentication, project authorization, browser guards, and strict input precede retrieval', async (context) => {

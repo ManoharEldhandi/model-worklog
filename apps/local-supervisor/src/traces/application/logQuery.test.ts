@@ -70,3 +70,58 @@ test('historical citations cannot be reused as evidence for a new answer', async
 	assert.equal(answer.generation.status, 'fallback');
 	assert.doesNotMatch(answer.answer, /previous claim/);
 });
+
+test('local answers use contextual retrieval for captured replies and summarize reported usage', () => {
+	const service = new LogQueryService({ retrieve: (_scope, plan) => {
+		assert.equal(plan.contextual, true);
+		return { ...repository.retrieve(_scope, plan, 8), strategy: 'contextual-spans', contextExpanded: true,
+			overview: { firstSeen: null, lastSeen: null, models: ['example-model'], services: ['test'], modelSpans: 2, reportedModelSpans: 1, reportedTokens: 42, usageComplete: false } };
+	} }, { admit: () => undefined }, () => new Date(source.startedAt));
+	const reply = service.ask('reader', LogQueryRequestSchema.parse({ projectId: 'project', question: 'What did it answer?' }));
+	assert.match(reply.answer, /\[S1\]/);
+	assert.doesNotMatch(reply.answer, /matching spans/);
+	const usage = service.ask('reader', LogQueryRequestSchema.parse({ projectId: 'project', question: 'Which model and how many tokens?' }));
+	assert.match(usage.answer, /example-model/);
+	assert.match(usage.answer, /42.*subtotal/);
+	assert.match(usage.answer, /\[A1\]/);
+});
+
+test('a contextual fallback remains visible when no lexical records match', () => {
+	const service = new LogQueryService({ retrieve: (scope, plan, limit) => ({ ...repository.retrieve(scope, plan, limit), matchedSpans: 0, contextExpanded: true }) }, { admit: () => undefined }, () => new Date(source.startedAt));
+	const answer = service.ask('reader', LogQueryRequestSchema.parse({ projectId: 'project', question: 'Investigate this mystery', synthesis: 'model' }));
+	assert.match(answer.answer, /context/i);
+	assert.match(answer.answer, /Quantity cannot be negative/);
+	assert.doesNotMatch(answer.answer, /Found 0 matching/);
+});
+
+test('tool follow-ups use the latest user tool scope instead of blending older questions', () => {
+	const scopes: (string | undefined)[] = [];
+	const service = new LogQueryService({ retrieve: (scope, plan, limit) => {
+		scopes.push(scope.toolName);
+		return repository.retrieve(scope, plan, limit);
+	} }, { admit: () => undefined }, () => new Date(source.startedAt));
+	const answer = service.ask('reader', LogQueryRequestSchema.parse({ projectId: 'project', question: 'How many times was it used?', history: [
+		{ role: 'user', content: 'How many times was read_file used?' },
+		{ role: 'assistant', content: 'Something unsupported about delete_file' },
+		{ role: 'user', content: 'How many times was validate_stock used?' },
+	] }));
+	assert.equal(answer.scope.toolName, 'validate_stock');
+	assert.equal(scopes.at(-1), 'validate_stock');
+});
+
+test('explicit lexical search is respected even for conversational wording', () => {
+	const service = new LogQueryService({ retrieve: (scope, plan, limit) => {
+		assert.equal(plan.focus, undefined);
+		return repository.retrieve(scope, plan, limit);
+	} }, { admit: () => undefined }, () => new Date(source.startedAt));
+	service.ask('reader', LogQueryRequestSchema.parse({ projectId: 'project', question: 'Which files mention inventory?', intent: 'search', synthesis: 'model' }));
+});
+
+test('questions about failed model calls retain failure evidence rather than switching to usage totals', () => {
+	const service = new LogQueryService({ retrieve: (scope, plan, limit) => ({ ...repository.retrieve(scope, plan, limit),
+		overview: { firstSeen: null, lastSeen: null, models: ['example'], services: [], modelSpans: 1, reportedModelSpans: 0, usageComplete: false } }) }, { admit: () => undefined }, () => new Date(source.startedAt));
+	const answer = service.ask('reader', LogQueryRequestSchema.parse({ projectId: 'project', question: 'Which model calls failed?' }));
+	assert.equal(answer.intent, 'failures');
+	assert.match(answer.answer, /Quantity cannot be negative/);
+	assert.match(answer.answer, /\[S1\]/);
+});

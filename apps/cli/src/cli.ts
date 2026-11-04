@@ -62,6 +62,7 @@ Options:
 	--intent <name>        auto, tools, failures, or search for ask
 	--synthesis <mode>     extractive (local default) or model (explicit provider opt-in)
 	--limit <1-20>         Maximum evidence citations for ask (default 8)
+	--conversation <file>  Keep bounded redacted ask history in a private local file
   --require-supervisor   Make doctor fail when the supervisor is unavailable
   --version, -V          Print the CLI version
   --help, -h             Show this help
@@ -113,6 +114,7 @@ export async function runCli(environment: CliEnvironment): Promise<number> {
 				toolName: optionString(options, 'tool'), since: optionString(options, 'since'), until: optionString(options, 'until'),
 				intent: optionString(options, 'intent'), limit: optionString(options, 'limit'),
 				synthesis: optionString(options, 'synthesis'),
+				conversation: optionString(options, 'conversation'),
 			});
 		case 'doctor':
 			return doctorCommand(context, { requireSupervisor: optionFlag(options, 'require-supervisor') });

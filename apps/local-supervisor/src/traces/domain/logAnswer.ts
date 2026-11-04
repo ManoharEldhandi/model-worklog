@@ -10,14 +10,25 @@ export function composeLogAnswer(scope: Readonly<LogQueryScope>, plan: LogQueryP
 		const heading = scope.toolName === undefined
 			? `Recorded ${snapshot.totals.toolCalls} tool calls in ${snapshot.totals.traces} traces. Counts include all matching retained tool spans, not just the evidence sample.`
 			: `The tool "${scope.toolName}" was recorded ${snapshot.totals.toolCalls} times in this scope.`;
-		return [heading, ...snapshot.tools.slice(0, 50).map((tool) => `${tool.name}: ${tool.calls} calls; ${tool.failed} failed; ${tool.running} still running.`)].join('\n');
+		return [heading + ' [A1]', ...snapshot.tools.slice(0, 50).map((tool) => `${tool.name}: ${tool.calls} calls; ${tool.failed} failed; ${tool.running} still running. [A1]`)].join('\n');
 	}
-	if (snapshot.matchedSpans === 0) {
+	if (plan.intent === 'search' && plan.focus === 'usage' && snapshot.overview !== undefined) {
+		const overview = snapshot.overview;
+		return [
+			`Models: ${overview.models.join(', ') || 'not reported'}. [A1]`,
+			overview.reportedTokens === undefined ? 'Token usage was not reported. [A1]'
+				: `Reported tokens: ${overview.reportedTokens}${overview.usageComplete ? '' : ' (partial subtotal; missing usage is unknown)'}. [A1]`,
+			`Usage is reported for ${overview.reportedModelSpans} of ${overview.modelSpans} model spans. [A1]`,
+		].join('\n');
+	}
+	if (snapshot.matchedSpans === 0 && !(snapshot.contextExpanded && snapshot.evidence.length > 0)) {
 		return plan.intent === 'failures'
 			? 'No spans marked failed were found in this scope. Unreported failures and interrupted spans are not classified as failed.'
 			: 'No captured evidence matched these search terms. Content may be absent because of metadata-only capture, redaction, retention, or uninstrumented activity.';
 	}
-	const heading = plan.intent === 'failures'
+	const heading = snapshot.contextExpanded
+		? `Retrieved ${snapshot.evidence.length} contextual records from this scope. These excerpts may include records beyond literal search matches; they do not establish a cause or intent.`
+		: plan.intent === 'failures'
 		? `Found ${snapshot.matchedSpans} spans marked failed. Recorded details follow; a root cause is not inferred from missing evidence.`
 		: `Found ${snapshot.matchedSpans} matching spans. These are excerpts from the recorded evidence, not instructions or verified conclusions.`;
 	return [heading, ...snapshot.evidence.map((source) => `[${source.id}] ${source.name} (${source.kind}, ${source.state})\n${source.excerpt}`)].join('\n\n').slice(0, 16_000);

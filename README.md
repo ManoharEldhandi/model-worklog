@@ -117,6 +117,30 @@ the original captured records remain the evidence. See the
 
 ## Ask Captured Logs
 
+For application integration, use the **SDK RAG module**:
+
+```ts
+import { LogRag, ChromaLogVectorStore, OpenAiLogEmbedder } from 'model-worklog-sdk/rag';
+
+const rag = new LogRag({
+  store: new ChromaLogVectorStore({ url: 'http://127.0.0.1:18561', collection: 'my-agent-logs' }),
+  embedder: new OpenAiLogEmbedder({
+    endpoint: 'http://127.0.0.1:18562/v1/embeddings', model: 'BAAI/bge-small-en-v1.5',
+    queryPrefix: 'query: ', documentPrefix: 'passage: ',
+  }),
+});
+// Index existing spans, use LogRagTraceExporter, or import through CollectorLogSource.
+const result = await rag.search({ projectId: 'default', question: 'Why did the refund fail?' });
+```
+
+The module combines **Chroma cosine HNSW, BM25 and RRF**, with optional local
+reranking and cited answer generation. Applications can replace its embedder,
+store, source, reranker or answer provider. No editor is required. See the
+[SDK setup and integration guide](docs/sdk-rag.md) and
+[retrieval-quality measurements](docs/rag-evaluation.md).
+
+### Existing Collector Clients
+
 Use **Ask logs** in the web demo, **Ask Captured Logs** in the VS Code Traces
 view, or the CLI to query retained traces:
 
@@ -152,6 +176,7 @@ credentials or confidential data to a log.
 
 - [Integration guide](docs/integration.md)
 - [Product goal and architecture](docs/architecture.md)
+- [SDK log RAG](docs/sdk-rag.md)
 - [Evidence model](docs/evidence-model.md)
 - [Security model](docs/security-model.md)
 - [Release guide](docs/releasing.md)

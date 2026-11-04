@@ -16,6 +16,11 @@ const startedTime = `julianday(${startedAt})`;
 const toolName = `CASE WHEN json_type(s.payload, '$.attributes."tool.name"') = 'text'
 	AND length(CAST(json_extract(s.payload, '$.attributes."tool.name"') AS BLOB)) BETWEEN 1 AND 256
 	THEN json_extract(s.payload, '$.attributes."tool.name"') ELSE json_extract(s.payload, '$.name') END`;
+function contextPayload(plan: LogQueryPlan): string {
+	const focused = plan.focus === 'response' ? "'output', json_extract(s.payload, '$.attributes.output'), 'content', json_extract(s.payload, '$.attributes.content'), "
+		: plan.focus === 'request' ? "'input', json_extract(s.payload, '$.attributes.input'), 'content', json_extract(s.payload, '$.attributes.content'), " : '';
+	return `json_object(${focused}'events', json_extract(s.payload, '$.events'), 'attributes', json_extract(s.payload, '$.attributes'))`;
+}
 
 interface SqlScope {
 	readonly where: string;
@@ -53,31 +58,34 @@ export class SqliteLogQueryRepository implements LogQueryRepository {
 			const selected = sqlScope(scope);
 			const totals = this.totals(selected);
 			const tools = this.tools(selected);
-			const focused = plan.contextual === true && plan.focus !== undefined;
+			const identifiers = plan.terms.filter((term) => /[_.:/-]/.test(term));
+			const focused = plan.contextual === true && plan.focus !== undefined && identifiers.length === 0;
+			const terms = plan.contextual === true && plan.focus !== undefined && identifiers.length > 0 ? identifiers : plan.terms;
 			const useSearch = plan.intent === 'search' && plan.terms.length > 0 && !focused;
 			const useFts = useSearch && this.fullText;
 			const from = useFts ? 'span_search JOIN spans s ON s.sequence = span_search.rowid' : 'spans s';
 			const filter = useSearch
-				? useFts ? 'span_search MATCH ? AND ' : `(${plan.terms.map(() => 'instr(lower(s.payload), ?) > 0').join(' OR ')}) AND `
+				? useFts ? 'span_search MATCH ? AND ' : `(${terms.map(() => 'instr(lower(s.payload), ?) > 0').join(' OR ')}) AND `
 				: plan.intent === 'tools' ? `${kind} = 'tool' AND ` : plan.intent === 'failures' ? "s.state = 'failed' AND " : '';
-			const searchValues = useFts ? [plan.terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(' OR ')] : useSearch ? [...plan.terms] : [];
+			const searchValues = useFts ? [terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(' OR ')] : useSearch ? [...terms] : [];
 			const values = [...searchValues, ...selected.values];
 			const where = `${filter}${selected.where}`;
 			const matchedSpans = integer(this.database.statement(`SELECT COUNT(*) AS count FROM ${from} WHERE ${where}`).get(...values), 'count');
-			const positions = plan.terms.map(() => 'CASE WHEN instr(lower(s.payload), ?) > 0 THEN instr(lower(s.payload), ?) ELSE 2147483647 END');
+			const payload = contextPayload(plan);
+			const positions = terms.map(() => 'CASE WHEN instr(lower(s.payload), ?) > 0 THEN instr(lower(s.payload), ?) ELSE 2147483647 END');
 			const position = positions.length === 1 ? positions[0] : `min(${positions.join(', ')})`;
 			const excerpt = useFts ? "substr(snippet(span_search, 0, '', '', ' ... ', 120), 1, 6000)"
-				: useSearch ? `substr(s.payload, max(1, (${position}) - 200), 6000)` : "substr(json_extract(s.payload, '$.attributes'), 1, 6000)";
-			const excerptValues = useSearch && !useFts ? plan.terms.flatMap((term) => [term, term]) : [];
+				: useSearch ? `substr(s.payload, max(1, (${position}) - 200), 6000)` : `substr(${payload}, 1, 6000)`;
+			const excerptValues = useSearch && !useFts ? terms.flatMap((term) => [term, term]) : [];
 			const order = useFts ? 'bm25(span_search), s.sequence DESC' : this.contextOrder(plan);
 			const primaryLimit = plan.contextual === true ? Math.max(1, limit - Math.floor(limit / 3)) : limit;
 			let rows = this.database.statement(`SELECT ${this.evidenceColumns()}, ${excerpt} AS excerpt,
-				length(json_extract(s.payload, '$.attributes')) > 6000 AS excerpt_shortened
+				length(${payload}) > 6000 AS excerpt_shortened
 				FROM ${from} WHERE ${where} ORDER BY ${order} LIMIT ?`).all(...excerptValues, ...values, primaryLimit);
 			let contextExpanded = focused;
 			if (plan.contextual === true && rows.length < limit) {
-				const context = this.database.statement(`SELECT ${this.evidenceColumns()}, substr(json_extract(s.payload, '$.attributes'), 1, 6000) AS excerpt,
-					length(json_extract(s.payload, '$.attributes')) > 6000 AS excerpt_shortened FROM spans s WHERE ${selected.where}
+				const context = this.database.statement(`SELECT ${this.evidenceColumns()}, substr(${payload}, 1, 6000) AS excerpt,
+					length(${payload}) > 6000 AS excerpt_shortened FROM spans s WHERE ${selected.where}
 					ORDER BY ${this.contextOrder({ ...plan, focus: 'overview' })} LIMIT ?`).all(...selected.values, limit);
 				const seen = new Set(rows.map((row) => integer(row, 'sequence')));
 				const additional = context.filter((row) => !seen.has(integer(row, 'sequence'))).slice(0, limit - rows.length);
@@ -103,7 +111,7 @@ export class SqliteLogQueryRepository implements LogQueryRepository {
 		const role = `json_extract(s.payload, '$.attributes."message.role"')`;
 		const source = `json_extract(s.payload, '$.attributes."source.kind"')`;
 		if (plan.focus === 'request') { return `CASE WHEN ${role} = 'user' THEN 0 WHEN ${kind} = 'agent' THEN 1 ELSE 2 END, ${startedTime}, s.sequence`; }
-		if (plan.focus === 'response') { return `CASE WHEN ${role} = 'assistant' THEN 0 WHEN ${kind} = 'model' THEN 1 ELSE 2 END, ${startedTime} DESC, s.sequence DESC`; }
+		if (plan.focus === 'response') { return `CASE WHEN ${role} = 'assistant' THEN 0 WHEN ${kind} = 'model' THEN 1 WHEN ${kind} = 'agent' THEN 2 ELSE 3 END, ${startedTime} DESC, s.sequence DESC`; }
 		if (plan.focus === 'usage') { return `CASE WHEN ${kind} = 'model' THEN 0 WHEN ${source} = 'usage.reported' THEN 1 ELSE 2 END, ${startedTime} DESC, s.sequence DESC`; }
 		if (plan.focus === 'files') { return `CASE WHEN ${source} = 'file.read' OR ${source} = 'file.changed' THEN 0 WHEN ${kind} = 'tool' THEN 1 ELSE 2 END, ${startedTime} DESC, s.sequence DESC`; }
 		if (plan.focus === 'timeline') { return `${startedTime}, s.sequence`; }

@@ -10,6 +10,11 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
+    "./rag": {
+      "types": "./dist/rag/index.d.ts",
+      "require": "./dist/rag/index.js",
+      "default": "./dist/rag/index.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
@@ -34,6 +39,7 @@
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/core": "^2.12.0",
     "@opentelemetry/sdk-trace-base": "^2.12.0",
+    "chromadb": "^3.5.0",
     "model-worklog-schema": "^2.1.0"
   },
   "engines": {

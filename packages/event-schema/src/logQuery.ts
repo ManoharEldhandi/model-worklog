@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { redactSensitiveText } from './privacy';
 
 import { CaptureReportSchema, ProjectIdSchema, SpanIdSchema, SpanKindSchema, SpanUsageSchema, TraceIdSchema, TraceStateSchema } from './trace';
 
@@ -114,9 +115,32 @@ export const LogSynthesisResultSchema = z.strictObject({
 export type LogConversationMessage = z.infer<typeof LogConversationMessageSchema>;
 export type LogQueryScope = z.infer<typeof LogQueryScopeSchema>;
 export type LogQueryRequest = z.infer<typeof LogQueryRequestSchema>;
+export type LogQueryInput = z.input<typeof LogQueryRequestSchema>;
 export type LogToolUsage = z.infer<typeof LogToolUsageSchema>;
 export type LogQueryEvidence = z.infer<typeof LogQueryEvidenceSchema>;
 export type LogQueryTotals = z.infer<typeof LogQueryTotalsSchema>;
 export type LogQueryOverview = z.infer<typeof LogQueryOverviewSchema>;
 export type LogQueryResponse = z.infer<typeof LogQueryResponseSchema>;
 export type LogSynthesisResult = z.infer<typeof LogSynthesisResultSchema>;
+
+export const LogConversationSchema = z.strictObject({
+	schemaVersion: z.literal(1), scope: LogQueryScopeSchema,
+	history: LogQueryRequestSchema.shape.history,
+}).refine((value) => value.history.reduce((total, message) => total + message.content.length, 0) <= 16_000, 'Conversation history exceeds 16000 characters');
+
+/** Keep only bounded, redacted user/assistant context. Sources are retrieved anew. */
+export function appendLogHistory(history: readonly LogConversationMessage[], question: string, answer: string): LogConversationMessage[] {
+	const additions: LogConversationMessage[] = [{ role: 'user', content: question }, { role: 'assistant', content: answer }];
+	const messages: LogConversationMessage[] = [...history, ...additions]
+		.map((message) => ({ role: message.role, content: redactSensitiveText(message.content).slice(0, 4_000) })).slice(-12);
+	while (messages.reduce((total, message) => total + message.content.length, 0) > 16_000) { messages.splice(0, 2); }
+	return messages;
+}
+
+export function logQueryResponseInScope(request: LogQueryRequest, response: LogQueryResponse): boolean {
+	return response.scope.projectId === request.projectId && response.scope.traceId === request.traceId
+		&& (request.toolName === undefined || response.scope.toolName === redactSensitiveText(request.toolName))
+		&& response.scope.since === (request.since === undefined ? undefined : new Date(request.since).toISOString())
+		&& response.scope.until === (request.until === undefined ? undefined : new Date(request.until).toISOString())
+		&& response.evidence.every((source) => source.projectId === request.projectId && (request.traceId === undefined || source.traceId === request.traceId));
+}

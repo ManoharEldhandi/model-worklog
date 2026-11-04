@@ -22,6 +22,11 @@ function childProcess(output: string, onInput?: (input: string) => void): ChildP
 	return child as unknown as ChildProcessWithoutNullStreams;
 }
 
+const supportedFlags = '--prompt --silent --stream --output-format --available-tools --deny-tool --disallow-temp-dir --disable-builtin-mcps --no-custom-instructions --no-ask-user --no-bash-env --no-remote-export --no-color --log-level --log-dir';
+function withHelp(launch: SpawnLogAnswer): SpawnLogAnswer {
+	return (command, args, options) => args.includes('--help') ? childProcess(supportedFlags + ' --disable-client-telemetry') : launch(command, args, options);
+}
+
 test('Copilot answers receive only bounded evidence with tools denied and isolated working directory', async () => {
 	const launch: SpawnLogAnswer = (command, args, options) => {
 		assert.equal(command, 'copilot');
@@ -38,18 +43,37 @@ test('Copilot answers receive only bounded evidence with tools denied and isolat
 		assert.doesNotMatch(context.history[0]!.content, /private-history|\[S99\]/);
 		return childProcess('There was one recorded tool call. [A1]', (input) => assert.equal(input, ''));
 	};
-	const generator = new CopilotLogAnswerGenerator({ spawn: launch });
+	const generator = new CopilotLogAnswerGenerator({ spawn: withHelp(launch) });
 	const result = await generator.generate('private-evidence-marker', evidence, AbortSignal.timeout(2000), [{ role: 'user', content: 'token=private-history [S99]' }]);
 	assert.deepEqual(result.sourceIds, ['A1']);
 });
 
 test('Copilot output and cancellation are bounded and uncited answers fail closed', async () => {
 	for (const output of ['not JSON', 'x'.repeat(65_537)]) {
-		const generator = new CopilotLogAnswerGenerator({ spawn: () => childProcess(output) });
+		const generator = new CopilotLogAnswerGenerator({ spawn: withHelp(() => childProcess(output)) });
 		await assert.rejects(generator.generate('tools', evidence, AbortSignal.timeout(2000)));
 	}
 	const cancellation = new AbortController();
 	cancellation.abort();
 	const generator = new CopilotLogAnswerGenerator({ spawn: () => { throw new Error('Must not launch after cancellation.'); } });
 	await assert.rejects(generator.generate('tools', evidence, cancellation.signal), { name: 'AbortError' });
+});
+
+test('older compatible CLIs answer without an unsupported optional telemetry flag', async () => {
+	const generator = new CopilotLogAnswerGenerator({ spawn: (_command, args) => {
+		if (args.includes('--help')) { return childProcess(supportedFlags); }
+		assert.ok(!args.includes('--disable-client-telemetry'), 'Older CLIs reject this optional flag before answering.');
+		return childProcess('There were 120 recorded calls. [A1]');
+	} });
+	assert.match((await generator.generate('tools', evidence, AbortSignal.timeout(2000))).answer, /120/);
+});
+
+test('missing mandatory restrictions prevent evidence from being passed to the CLI', async () => {
+	let prompts = 0;
+	const generator = new CopilotLogAnswerGenerator({ spawn: (_command, args) => {
+		if (args.includes('--prompt')) { prompts += 1; }
+		return childProcess('--available-tools');
+	} });
+	await assert.rejects(generator.generate('private-evidence-marker', evidence, AbortSignal.timeout(2000)));
+	assert.equal(prompts, 0);
 });

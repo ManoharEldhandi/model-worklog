@@ -23,6 +23,7 @@ events cannot be reconstructed. Never represent partial capture as complete.
 | Retrieval domain | Query strategies, evidence composition, ports/interceptors | Collector `domain/queryPlanner.ts`, `logQuery.ts`, `logAnswer.ts` |
 | Retrieval application | Scoped read orchestration, admission, optional generation | Collector `application/logQuery.ts` |
 | Retrieval infrastructure | Transactional FTS5, exact SQL, optional provider strategy | Collector `infrastructure/log*.ts` |
+| SDK semantic RAG | Chroma cosine HNSW, embeddings, BM25/RRF, reranking, extensible source/answer ports | `packages/adapter-sdk/src/rag/` |
 
 Business logic depends on exporter/repository/credential interfaces. No SDK
 global provider or monkey-patch is installed. Each logger owns its async context.
@@ -48,6 +49,8 @@ global provider or monkey-patch is installed. Each logger owns its async context
 4. Transactional collector, scoped expiring/revocable credentials, pagination, quotas, retention, OTLP/HTTP.
 5. VS Code setup, trace inspection, role-gated actions, and bounded complete-page export.
 6. Local trace-log retrieval with exact counts, source-linked evidence, optional model synthesis, and CLI/browser/native editor workflows.
+7. SDK-owned semantic retrieval through Chroma, local embedding/reranking examples,
+   direct trace exporters, collector imports, and labelled precision/recall checks.
 
 The retrieval application depends on repository, admission, and generation ports.
 Persistence interceptors maintain an external-content FTS5 read index atomically
@@ -55,6 +58,11 @@ with existing span writes and retention. Query strategies separate exact tool
 analytics from failed-span and lexical evidence retrieval. The default answer
 strategy is local; explicit model synthesis sees only bounded authorized evidence
 and falls back on provider/citation failures. See [retrieval](log-retrieval.md).
+
+The SDK RAG subpath is independent of the editor and collector retrieval runtime.
+Chroma is its derived vector/document index; SQLite remains the collector's
+capture store and source of exact collector counts. Applications own index
+synchronization and retention across the two stores. See [SDK RAG](sdk-rag.md).
 
 ## Further Qualification
 

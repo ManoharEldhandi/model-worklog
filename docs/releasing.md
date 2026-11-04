@@ -37,11 +37,18 @@ On Linux CI, select Node 22.13.0 before running from the root:
 cd "$(git rev-parse --show-toplevel)"
 node --version
 npm ci
+npx playwright install --with-deps chromium
 xvfb-run -a npm run release:check
 node examples/sdk-tracing-demo.mjs
 ```
 
 On a desktop with a display, use `npm run release:check` without `xvfb-run`.
+
+SDK RAG releases also require `npm run test:rag:live` with the Python environment
+from the [SDK guide](sdk-rag.md). The separate CI quality job retains retrieval
+metrics, ANN recall and local-service logs. This check downloads local model
+weights on first use and does not require a model account.
+Install Chromium first with `npx playwright install chromium`.
 `release:check` builds/tests packages and the extension, checks packing, and
 produces the VSIX. The [integration demo](../examples/sdk-tracing-demo.mjs) checks
 SDK delivery, separate writer/reader access, retained spans, and evidence grades.

@@ -178,3 +178,33 @@ test('conversational file questions retain broader context even when a run conta
 	assert.equal(result.contextExpanded, true);
 	assert.equal(result.totals.toolCalls, 40);
 });
+
+test('failed-span evidence includes captured error events even when attributes are empty', async (context) => {
+	const { repository, queries } = await store(context);
+	const first = prepared({ state: 'failed', attributes: {}, events: [{ name: 'exception', at: '2026-10-13T00:00:00.000Z', attributes: { 'exception.message': 'Inventory database is unavailable.' } }] });
+	repository.ingest([first], first.span.startedAt);
+	const result = queries.retrieve({ projectId: 'project' }, planLogQuery('What failed?'), 8);
+	assert.match(result.evidence[0]!.excerpt, /Inventory database is unavailable/);
+});
+
+test('reply retrieval prioritizes an agent result and keeps output ahead of a long captured input', async (context) => {
+	const { repository, queries } = await store(context);
+	const root = prepared({ kind: 'agent', name: 'review', attributes: { input: 'x'.repeat(10_000), output: 'The final review found a missing stock check.' } });
+	const tool = prepared({ spanId: '2'.repeat(16), kind: 'tool', name: 'read_file', startedAt: '2026-10-13T00:00:01.000Z', endedAt: '2026-10-13T00:00:02.000Z', attributes: { output: 'A file read is not the agent answer.' } });
+	repository.ingest([root, tool], root.span.startedAt);
+	const result = queries.retrieve({ projectId: 'project' }, { ...planLogQuery('What did it answer?'), contextual: true }, 1);
+	assert.equal(result.evidence[0]?.kind, 'agent');
+	assert.match(result.evidence[0]!.excerpt, /final review found/);
+	assert.equal(result.evidence[0]?.excerptTruncated, true);
+});
+
+test('conversational file questions retain an explicitly named older path ahead of repeated recent reads', async (context) => {
+	const { repository, queries } = await store(context);
+	const target = prepared({ attributes: { input: { path: 'src/pricing.ts' }, output: 'Discount validation source.' } });
+	const recent = Array.from({ length: 30 }, (_, index) => prepared({ spanId: (index + 2).toString(16).padStart(16, '0'), startedAt: '2026-10-13T00:00:01.000Z', endedAt: '2026-10-13T00:00:02.000Z', attributes: { input: { path: 'src/inventory.ts' } } }));
+	repository.ingest([target, ...recent], target.span.startedAt);
+	const result = queries.retrieve({ projectId: 'project' }, { ...planLogQuery('Which files were read at src/pricing.ts?'), contextual: true }, 3);
+	assert.equal(result.evidence[0]?.spanId, target.span.spanId);
+	assert.match(result.evidence[0]!.excerpt, /pricing/);
+	assert.equal(result.totals.toolCalls, 31);
+});

@@ -94,6 +94,32 @@ test('no arguments prints help to stderr and returns InvalidInvocation', async (
 	assert.match(result.stderr, /Usage:/);
 });
 
+test('ask conversation files preserve bounded redacted follow-ups and reject scope changes', async (context) => {
+	const directory = await mkdtemp(join(tmpdir(), 'worklog-conversation-'));
+	context.after(() => rm(directory, { recursive: true, force: true }));
+	const path = join(directory, 'chat.json');
+	let requests = 0;
+	const fetchImpl: FetchLike = async (_url, init) => {
+		const body = JSON.parse(init!.body!);
+		assert.equal(body.history.length, requests === 0 ? 0 : 2);
+		if (requests > 0) { assert.doesNotMatch(JSON.stringify(body.history), /private-question|private-answer/); }
+		requests += 1;
+		return new Response(JSON.stringify({ schemaVersion: 1, intent: 'tools', question: body.question, answer: 'Nothing recorded. token=private-answer', scope: { projectId: 'app' }, snapshotAt: '2026-10-20T00:00:00.000Z',
+			totals: { spans: 0, traces: 0, toolCalls: 0, failedSpans: 0, runningSpans: 0, metadataOnlySpans: 0, limitedSpans: 0 }, tools: [], evidence: [], retrieval: { strategy: 'exact-aggregate', matchedSpans: 0, returnedSpans: 0, truncated: false, toolsTruncated: false }, limitations: [] }));
+	};
+	const argv = ['ask', 'tools token=private-question', '--project', 'app', '--conversation', path];
+	assert.equal((await run(argv, fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' })).code, ExitCode.Ok);
+	assert.equal((await run(argv, fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' })).code, ExitCode.Ok);
+	const persisted = await readFile(path, 'utf8');
+	assert.doesNotMatch(persisted, /private-question|private-answer|test-token/);
+	assert.equal((JSON.parse(persisted) as { history: unknown[] }).history.length, 4);
+	assert.equal((await stat(path)).mode & 0o077, 0);
+	const wrong = await run(['ask', 'tools', '--project', 'other', '--conversation', path], fetchImpl, { MODEL_WORKLOG_TOKEN: 'test-token' });
+	assert.equal(wrong.code, ExitCode.InvalidInvocation);
+	assert.equal(requests, 2);
+	assert.equal(await readFile(path, 'utf8'), persisted);
+});
+
 test('--help returns Ok and prints to stdout', async () => {
 	const result = await run(['--help']);
 	assert.equal(result.code, ExitCode.Ok);

@@ -106,6 +106,7 @@ export function createLogConversation({ getTraceId }) {
 	let pending;
 	let sequence = 0;
 	let scopeKey;
+	let modelLabel = 'Assistant';
 
 	function selection() {
 		const body = { intent: document.querySelector('#query-intent').value, synthesis: model.checked ? 'model' : 'extractive', limit: 12 };
@@ -150,7 +151,7 @@ export function createLogConversation({ getTraceId }) {
 		const text = node('p', 'log-question', question);
 		user.append(node('p', 'message-label', 'You'), text);
 		const assistant = node('div', 'log-message log-assistant');
-		const label = node('p', 'message-label', model.checked ? 'Copilot' : 'Evidence');
+		const label = node('p', 'message-label', model.checked ? modelLabel : 'Evidence');
 		const body = node('div', 'query-answer markdown');
 		body.append(node('p', 'answer-pending', 'Retrieving relevant logs...'));
 		assistant.append(label, body);
@@ -224,6 +225,7 @@ export function createLogConversation({ getTraceId }) {
 	return {
 		ask, clear, syncScope,
 		configure(config) {
+			modelLabel = config.mode === 'copilot' ? 'Copilot' : 'Assistant';
 			document.querySelector('#query-model-control').hidden = !config.modelSynthesis;
 			document.querySelector('#query-model-label').textContent = config.mode === 'copilot' ? 'Copilot answers' : 'Model answers';
 			model.checked = config.modelSynthesis && config.mode === 'copilot';

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { LogQueryRequestSchema, LogSynthesisResultSchema } from './logQuery';
+import { LogConversationSchema, LogQueryRequestSchema, LogSynthesisResultSchema, appendLogHistory } from './logQuery';
 
 test('log questions require an explicit bounded project scope and strict fields', () => {
 	assert.deepEqual(LogQueryRequestSchema.parse({ projectId: 'project', question: '  What tools were used?  ' }), {
@@ -40,4 +40,17 @@ test('conversational answers can cite aggregates or explicitly report insufficie
 	assert.equal(LogSynthesisResultSchema.safeParse({ answer: 'There were five calls [A1].', sourceIds: ['A1'] }).success, true);
 	assert.equal(LogSynthesisResultSchema.safeParse({ answer: 'That was not captured.', sourceIds: [] }).success, true);
 	assert.equal(LogSynthesisResultSchema.safeParse({ answer: 'Invented source.', sourceIds: ['A99'] }).success, false);
+});
+
+test('saved conversation history is redacted, bounded, and accepted as the next query context', () => {
+	let history: ReturnType<typeof appendLogHistory> = [];
+	for (let index = 0; index < 30; index += 1) { history = appendLogHistory(history, `Question ${index} token=private-input`, 'a'.repeat(8_000) + ' token=private-output'); }
+	assert.ok(history.length <= 12);
+	assert.ok(history.every((message) => message.content.length <= 4_000));
+	assert.ok(history.reduce((total, message) => total + message.content.length, 0) <= 16_000);
+	assert.doesNotMatch(JSON.stringify(history), /private-input|private-output/);
+	assert.equal(history[0]?.role, 'user');
+	assert.equal(history.at(-1)?.role, 'assistant');
+	assert.doesNotThrow(() => LogConversationSchema.parse({ schemaVersion: 1, scope: { projectId: 'app' }, history }));
+	assert.doesNotThrow(() => LogQueryRequestSchema.parse({ projectId: 'app', question: 'Follow up', history }));
 });

@@ -9,6 +9,35 @@ permissions:
   contents: read
 
 jobs:
+  sdk-rag-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: examples/rag/requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/model-worklog/models
+          key: rag-models-v1-${{ runner.os }}-${{ hashFiles('examples/rag/requirements.txt', 'examples/rag/local_embeddings.py') }}
+      - run: npm ci
+      - run: python -m venv .venv-rag
+      - run: .venv-rag/bin/pip install -r examples/rag/requirements.txt
+      - run: npm run test:rag:live
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-rag-quality
+          path: output/rag/
+          if-no-files-found: warn
+
   minimum-runtime:
     runs-on: ubuntu-latest
     steps:
@@ -33,7 +62,9 @@ jobs:
       - run: npm ci
       - run: npm run release:versions
       - run: npm audit --omit=dev
+      - run: npx playwright install --with-deps chromium
       - run: npm test
+      - run: npm run test:browser
       - run: npm run demo:trace
       - run: npm run pack:check
       - run: npm --prefix apps/vscode-extension ci

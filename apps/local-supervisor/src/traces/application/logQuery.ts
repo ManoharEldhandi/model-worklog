@@ -69,11 +69,16 @@ export class LogQueryService {
 		this.admission.admit(principalId);
 		const automatic = planLogQuery(request.question);
 		const resolved = conversationQuestion(request.question, request.history);
-		const plan = Object.freeze({ ...automatic, terms: planLogQuery(resolved).terms, intent: request.intent === 'auto' ? automatic.intent : request.intent, contextual: request.synthesis === 'model' });
+		const plan = Object.freeze({ ...automatic, terms: planLogQuery(resolved).terms,
+			focus: request.intent === 'auto' ? automatic.focus : undefined,
+			intent: request.intent === 'auto' ? automatic.intent : request.intent,
+			contextual: request.synthesis === 'model' || (request.intent === 'auto' && automatic.focus !== undefined) });
 		let scope = queryScope(request);
 		let snapshot = this.repository.retrieve(scope, plan, request.limit);
 		if (plan.intent === 'tools' && scope.toolName === undefined) {
-			const name = requestedToolName(request.question) ?? mentionedTool(resolved, snapshot.tools.map((tool) => tool.name));
+			const previous = resolved === request.question ? undefined : request.history.filter((message) => message.role === 'user').at(-1)?.content;
+			const name = requestedToolName(request.question) ?? mentionedTool(request.question, snapshot.tools.map((tool) => tool.name))
+				?? (previous === undefined ? undefined : requestedToolName(previous) ?? mentionedTool(previous, snapshot.tools.map((tool) => tool.name)));
 			if (name !== undefined) {
 				scope = Object.freeze({ ...scope, toolName: name });
 				snapshot = this.repository.retrieve(scope, plan, request.limit);

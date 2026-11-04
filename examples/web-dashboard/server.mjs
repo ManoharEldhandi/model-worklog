@@ -541,6 +541,7 @@ export async function startWebDashboard(options = {}) {
 	]);
 	await supervisorRequest(collector, collector.authToken, '/v1/workspaces/trust', 'POST', { workspacePath });
 	const runs = new Map();
+	const activeQueries = new Set();
 	let activeSample;
 	const staticRoot = new URL('./public/', import.meta.url);
 	const server = createServer((request, response) => {
@@ -555,11 +556,12 @@ export async function startWebDashboard(options = {}) {
 				const parsed = LogQueryRequestSchema.safeParse({ ...body, projectId: PROJECT_ID });
 				if (!parsed.success) { throw new DashboardHttpError(400, 'Enter a question of 1-2000 characters and valid scope filters.'); }
 				const cancellation = new AbortController();
+				activeQueries.add(cancellation);
 				const abort = () => cancellation.abort();
 				response.once('close', abort);
 				try {
 					sendJson(response, 200, await supervisorRequest(collector, reader.token, '/v2/logs/query', 'POST', parsed.data, { timeoutMs: 55_000, signal: cancellation.signal }));
-				} finally { response.removeListener('close', abort); }
+				} finally { activeQueries.delete(cancellation); response.removeListener('close', abort); }
 				return;
 			}
 			if (request.method === 'GET' && url.pathname === '/api/logs/evidence') {
@@ -673,7 +675,10 @@ export async function startWebDashboard(options = {}) {
 				return;
 			}
 			closed = true;
-			await new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+			for (const cancellation of activeQueries) { cancellation.abort(); }
+			const stopped = new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+			server.closeAllConnections();
+			await stopped;
 			await activeSample;
 			await collector.close();
 			await rm(workspacePath, { force: true, recursive: true });

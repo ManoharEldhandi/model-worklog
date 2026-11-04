@@ -65,6 +65,26 @@ test('web dashboard records a browser interaction as nested SDK spans', async (t
 	assert.equal('token' in exported, false);
 });
 
+test('dashboard shutdown cancels outstanding log answers without waiting for the model deadline', async () => {
+	let started;
+	const ready = new Promise((resolve) => { started = resolve; });
+	let cancelled = false;
+	const dashboard = await startWebDashboard({ provider: 'offline-demo', logAnswerGenerator: {
+		async generate(_question, _evidence, signal) {
+			started();
+			return new Promise((_resolve, reject) => signal.addEventListener('abort', () => { cancelled = true; reject(signal.reason); }, { once: true }));
+		},
+	} });
+	const controller = new AbortController();
+	const pending = fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Summarize', synthesis: 'model' }), signal: controller.signal }).catch(() => undefined);
+	await ready;
+	let closed = false;
+	const closing = dashboard.close().then(() => { closed = true; });
+	const deadline = setTimeout(() => controller.abort(), 1_000);
+	try { await closing; assert.equal(cancelled, true); assert.equal(controller.signal.aborted, false, 'Shutdown must finish before the cleanup deadline.'); }
+	finally { clearTimeout(deadline); controller.abort(); await pending; if (!closed) { await closing; } }
+});
+
 test('dashboard groups native read lifecycles and retains MCP results and their raw source references', async (testContext) => {
 	const dashboard = await startWebDashboard({ provider: 'copilot', copilotRelayFactory: (sink, options, onFinished) => ({
 		async start() {

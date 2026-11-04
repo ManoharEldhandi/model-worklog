@@ -71,6 +71,14 @@ guarantees complete or exactly-once evidence.
 
 ## Log Retrieval And Optional Synthesis
 
+The SDK's [Chroma RAG module](sdk-rag.md) is opt-in and independent of editor UI.
+It redacts and bounds chunks before embedding/indexing. Its project filters are
+not authentication: the embedding application must authorize callers. Chroma is
+a separate derived copy; wire deletion into application retention or run complete
+scoped `sync(..., { prune: true })` after collector retention. A partial scan
+cannot authorize pruning. Use a single writer and a separate collection for a
+changed embedding model/version. Indexing and source storage are not one transaction.
+
 `POST /v2/logs/query` inherits trace authentication, explicit project scoping,
 loopback origin guards, and redaction. Writer credentials cannot query. Exact
 aggregates and bounded FTS5 excerpts use retained spans only; legacy sessions are

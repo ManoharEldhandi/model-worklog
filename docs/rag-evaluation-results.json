@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-04T13:23:41.163Z",
+  "runtime": {
+    "node": "22.13.0",
+    "python": "3.13.14",
+    "platform": "macOS arm64"
+  },
+  "limitations": "Curated synthetic regression fixtures used during iteration; not an independent blind production benchmark. ANN vectors test index approximation separately from semantic relevance.",
+  "model": "BAAI/bge-small-en-v1.5",
+  "rerankModel": "ms-marco-MiniLM-L-12-v2",
+  "corpusSpans": 40,
+  "hnsw": {
+    "space": "cosine",
+    "ef_construction": 200,
+    "ef_search": 128,
+    "max_neighbors": 32,
+    "resize_factor": 1.2,
+    "sync_threshold": 1000
+  },
+  "definition": "Source-level metrics after deduplicating span IDs. Every labelled query has one relevant source, so maximum precision@3=1/3 and precision@5=1/5.",
+  "development": {
+    "bm25": {
+      "metrics": {
+        "queries": 12,
+        "mrrAt10": 0.8202380952380951,
+        "ndcgAt5": 0.8348152134004999,
+        "precisionAt1": 0.75,
+        "recallAt1": 0.75,
+        "precisionAt3": 0.2777777777777778,
+        "recallAt3": 0.8333333333333334,
+        "precisionAt5": 0.18333333333333332,
+        "recallAt5": 0.9166666666666666
+      },
+      "latency": {
+        "p50Ms": 23.219583000000057,
+        "p95Ms": 70.60704100000021
+      }
+    },
+    "vector": {
+      "metrics": {
+        "queries": 12,
+        "mrrAt10": 1,
+        "ndcgAt5": 1,
+        "precisionAt1": 1,
+        "recallAt1": 1,
+        "precisionAt3": 0.3333333333333333,
+        "recallAt3": 1,
+        "precisionAt5": 0.19999999999999998,
+        "recallAt5": 1
+      },
+      "latency": {
+        "p50Ms": 50.07441600000038,
+        "p95Ms": 57.790250000000015
+      }
+    },
+    "hybrid": {
+      "metrics": {
+        "queries": 12,
+        "mrrAt10": 0.9583333333333334,
+        "ndcgAt5": 0.9692441461309548,
+        "precisionAt1": 0.9166666666666666,
+        "recallAt1": 0.9166666666666666,
+        "precisionAt3": 0.3333333333333333,
+        "recallAt3": 1,
+        "precisionAt5": 0.19999999999999998,
+        "recallAt5": 1
+      },
+      "latency": {
+        "p50Ms": 39.24504100000013,
+        "p95Ms": 42.62791599999946
+      }
+    },
+    "hybridReranked": {
+      "metrics": {
+        "queries": 12,
+        "mrrAt10": 1,
+        "ndcgAt5": 1,
+        "precisionAt1": 1,
+        "recallAt1": 1,
+        "precisionAt3": 0.3333333333333333,
+        "recallAt3": 1,
+        "precisionAt5": 0.19999999999999998,
+        "recallAt5": 1
+      },
+      "latency": {
+        "p50Ms": 1338.5226249999996,
+        "p95Ms": 2190.4343750000007
+      }
+    }
+  },
+  "test": {
+    "bm25": {
+      "metrics": {
+        "queries": 32,
+        "mrrAt10": 0.9166666666666666,
+        "ndcgAt5": 0.9300581095982161,
+        "precisionAt1": 0.875,
+        "recallAt1": 0.875,
+        "precisionAt3": 0.3229166666666667,
+        "recallAt3": 0.96875,
+        "precisionAt5": 0.1937500000000001,
+        "recallAt5": 0.96875
+      },
+      "latency": {
+        "p50Ms": 19.148999999997613,
+        "p95Ms": 22.3995419999992
+      }
+    },
+    "vector": {
+      "metrics": {
+        "queries": 32,
+        "mrrAt10": 0.96875,
+        "ndcgAt5": 0.9769331095982161,
+        "precisionAt1": 0.9375,
+        "recallAt1": 0.9375,
+        "precisionAt3": 0.33333333333333337,
+        "recallAt3": 1,
+        "precisionAt5": 0.2000000000000001,
+        "recallAt5": 1
+      },
+      "latency": {
+        "p50Ms": 40.461749999998574,
+        "p95Ms": 46.03620900000169
+      }
+    },
+    "hybrid": {
+      "metrics": {
+        "queries": 32,
+        "mrrAt10": 0.9375,
+        "ndcgAt5": 0.9456831095982161,
+        "precisionAt1": 0.90625,
+        "recallAt1": 0.90625,
+        "precisionAt3": 0.3229166666666667,
+        "recallAt3": 0.96875,
+        "precisionAt5": 0.1937500000000001,
+        "recallAt5": 0.96875
+      },
+      "latency": {
+        "p50Ms": 41.17883300000176,
+        "p95Ms": 51.85558300000048
+      }
+    },
+    "hybridReranked": {
+      "metrics": {
+        "queries": 32,
+        "mrrAt10": 1,
+        "ndcgAt5": 1,
+        "precisionAt1": 1,
+        "recallAt1": 1,
+        "precisionAt3": 0.33333333333333337,
+        "recallAt3": 1,
+        "precisionAt5": 0.2000000000000001,
+        "recallAt5": 1
+      },
+      "latency": {
+        "p50Ms": 1353.7437499999978,
+        "p95Ms": 1579.958791000001
+      }
+    }
+  },
+  "controls": [
+    {
+      "question": "What is the weather in Hyderabad tomorrow?",
+      "returned": 0,
+      "topSimilarity": null,
+      "relevance": null
+    },
+    {
+      "question": "Who won the latest international football final?",
+      "returned": 0,
+      "topSimilarity": null,
+      "relevance": null
+    },
+    {
+      "question": "What was the database password before redaction?",
+      "returned": 2,
+      "topSimilarity": 0.80251473,
+      "relevance": 0.17214521765708923
+    }
+  ],
+  "ann": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-11-04T13:24:53.673Z",
+    "seed": 73491,
+    "corpusVectors": 2048,
+    "dimensions": 384,
+    "queries": 50,
+    "metric": "HNSW ANN recall@10 against exact brute-force cosine neighbours; synthetic vectors, separate from semantic relevance.",
+    "configuration": {
+      "space": "cosine",
+      "ef_construction": 200,
+      "ef_search": 128,
+      "max_neighbors": 32,
+      "resize_factor": 1.2,
+      "sync_threshold": 1000
+    },
+    "recallAt10": 0.9940000000000001,
+    "minimumQueryRecallAt10": 0.9,
+    "p50Ms": 4.10287500000004,
+    "p95Ms": 5.75570899999957
+  }
+}

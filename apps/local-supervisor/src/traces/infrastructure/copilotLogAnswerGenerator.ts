@@ -56,6 +56,7 @@ export class CopilotLogAnswerGenerator implements LogAnswerGenerator {
 	readonly model: string | undefined;
 	private readonly launch: SpawnLogAnswer;
 	private active = 0;
+	private optionalFlags: readonly string[] | undefined;
 
 	constructor(options: CopilotLogAnswerOptions = {}) {
 		if (options.model !== undefined && (options.model.trim() === '' || options.model.length > 128)) { throw new Error('Invalid Copilot log-answer model.'); }
@@ -71,13 +72,14 @@ export class CopilotLogAnswerGenerator implements LogAnswerGenerator {
 		this.active += 1;
 		let directory: string | undefined;
 		try {
+			const optionalFlags = await this.compatibleFlags(signal);
 			directory = await mkdtemp(join(tmpdir(), 'mw-log-answer-'));
 			signal.throwIfAborted();
 			const child = this.launch('copilot', [
 				'--prompt', `${COPILOT_LOG_ANSWER_INSTRUCTIONS}\nEVIDENCE_JSON:\n${input}`,
 				'--silent', '--stream', 'off', '--output-format', 'text', '--available-tools',
 				'--deny-tool', 'shell', '--deny-tool', 'write', '--deny-tool', 'url', '--disallow-temp-dir', '--disable-builtin-mcps', '--no-custom-instructions',
-				'--no-ask-user', '--no-bash-env', '--no-remote-export', '--disable-client-telemetry', '--no-color',
+				'--no-ask-user', '--no-bash-env', '--no-remote-export', ...optionalFlags, '--no-color',
 				'--log-level', 'none', '--log-dir', join(directory, 'logs'),
 				...(this.model === undefined ? [] : ['--model', this.model]),
 			], { cwd: directory, windowsHide: true, env: { ...process.env, COPILOT_ALLOW_ALL: 'false' } });
@@ -89,5 +91,16 @@ export class CopilotLogAnswerGenerator implements LogAnswerGenerator {
 			this.active -= 1;
 			if (directory !== undefined) { await rm(directory, { recursive: true, force: true }); }
 		}
+	}
+
+	private async compatibleFlags(signal: AbortSignal): Promise<readonly string[]> {
+		if (this.optionalFlags !== undefined) { return this.optionalFlags; }
+		const child = this.launch('copilot', ['--help'], { windowsHide: true, env: { ...process.env, COPILOT_ALLOW_ALL: 'false' } });
+		const help = await readAnswer(child, AbortSignal.any([signal, AbortSignal.timeout(5_000)]));
+		const required = ['--prompt', '--silent', '--stream', '--output-format', '--available-tools', '--deny-tool', '--disallow-temp-dir',
+			'--disable-builtin-mcps', '--no-custom-instructions', '--no-ask-user', '--no-bash-env', '--no-remote-export', '--no-color', '--log-level', '--log-dir'];
+		if (required.some((flag) => !help.includes(flag))) { throw new Error('The installed Copilot CLI lacks required restricted log-answer capabilities.'); }
+		this.optionalFlags = Object.freeze(help.includes('--disable-client-telemetry') ? ['--disable-client-telemetry'] : []);
+		return this.optionalFlags;
 	}
 }
