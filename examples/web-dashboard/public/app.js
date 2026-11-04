@@ -321,12 +321,13 @@ sampleButton.addEventListener('click', async () => {
 	queryError.hidden = true;
 	queryStatus.textContent = 'Recording sample capture...';
 	try {
-		const response = await fetch('/api/logs/sample', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(15_000) });
+		const scenario = document.querySelector('#sample-scenario').value;
+		const response = await fetch('/api/logs/sample', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scenario }), signal: AbortSignal.timeout(15_000) });
 		const payload = await response.json();
 		if (!response.ok) { throw new Error(payload?.error?.message ?? 'Sample capture failed.'); }
 		activeRun = payload.runId;
 		pendingSampleQuery = true;
-		addMessage('user', 'Record inventory sample capture');
+		addMessage('user', scenario === 'refund' ? 'Record refund investigation sample' : 'Record inventory sample capture');
 		queryScope.querySelector('[value="latest"]').disabled = false;
 		queryScope.value = 'latest';
 		void updateRun();
@@ -346,6 +347,7 @@ async function loadConfig() {
 		}
 		const config = await response.json();
 		logConversation.configure(config);
+		if (config.semanticSearch) { const control = document.querySelector('input[name="log-view"][value="query"]'); control.checked = true; control.dispatchEvent(new Event('change')); }
 		providerMode.textContent = config.mode === 'copilot' ? 'GitHub Copilot' : config.mode === 'openai-compatible' ? 'Live provider' : 'Offline demo';
 		connectionStatus.textContent = `${config.provider} / Local collector`;
 		workspaceContext.textContent = `${config.workspace.label}: ${config.workspace.files.join(', ')}`;

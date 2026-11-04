@@ -47,10 +47,11 @@ try {
 		MODEL_WORKLOG_RERANK_URL: `http://127.0.0.1:${embeddingPort}/v1/rerank`, MODEL_WORKLOG_RERANK_MODEL: 'ms-marco-MiniLM-L-12-v2',
 		MODEL_WORKLOG_MIN_RERANK_SCORE: '0.0001', MODEL_WORKLOG_RERANK_VECTOR_WEIGHT: '0.75', MODEL_WORKLOG_HNSW_EF_SEARCH: '128',
 		MODEL_WORKLOG_EVAL_MODES: 'bm25,vector,hybrid,hybridReranked', MODEL_WORKLOG_RAG_REPORT: 'output/rag/evaluation.json' };
-	await command(['--test', 'packages/adapter-sdk/test-dist/rag/*.test.js', 'examples/rag/evaluation/metrics.test.mjs', 'examples/rag/integration.test.mjs'], env);
+	await command(['--test', 'packages/adapter-sdk/test-dist/rag/*.test.js', 'examples/rag/evaluation/metrics.test.mjs', 'examples/rag/integration.test.mjs', 'examples/rag/web-integration.test.mjs'], env);
 	await command(['examples/rag/quickstart.mjs'], env);
 	await command(['examples/rag/evaluation/run.mjs', '--check'], env);
 	await command(['examples/rag/evaluation/ann.mjs', '--check'], env);
+	if (process.argv.includes('--browser')) { await command(['node_modules/@playwright/test/cli.js', 'test', '--config', 'examples/web-dashboard/playwright.config.mjs', 'rag.browser.spec.mjs'], env); }
 	console.log('All SDK RAG integration, retrieval-quality and ANN checks passed.');
 } finally {
 	for (const child of children) { if (child.exitCode === null) { child.kill('SIGTERM'); } }

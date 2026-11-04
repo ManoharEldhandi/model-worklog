@@ -60,6 +60,33 @@ The supervisor defaults to metadata-only capture. There is **no content opt-in t
 
 ## Optional CLI Logs
 
+CLI discovery checks PATH, common install locations, and the user's login-shell
+PATH, so opening VS Code from the Dock does not require a Homebrew PATH tweak.
+For a custom installation, set these in **User Settings** using full executable
+paths without arguments:
+
+```json
+{
+  "model-worklog.codex.path": "/your/install/bin/codex",
+  "model-worklog.copilot.path": "/your/install/bin/copilot"
+}
+```
+
+`model-worklog.node.path` is optional for CLIs that use a Node launcher. Standalone
+supervisors use `MODEL_WORKLOG_CODEX_PATH`, `MODEL_WORKLOG_COPILOT_PATH`, and
+`MODEL_WORKLOG_NODE_PATH`. Workspace settings cannot select executables. Restart
+the local Logger supervisor after changing these paths; an older running
+supervisor is reported as **CLI update needed**. CLI authentication is still
+handled by Codex or Copilot.
+
+The Copilot hook uses the extension host's runtime directly, so it does not
+require a separate `node` command on the terminal PATH.
+
+If Codex starts but rejects its configured model, set **model-worklog.codex.model**
+in User Settings to a model available to your account. This affects logged tasks
+only and leaves the global Codex configuration unchanged. Provider errors appear
+in the log, separately from executable-discovery errors.
+
 **Log a Codex Task**, **Log a Copilot CLI Task**, and **Start Interactive Copilot CLI** retain their existing launchers and session UI, including live updates, stop recording, JSON download, and confirmed deletion. Enable retains the existing Copilot CLI personal-hook setup; restart Copilot CLI for future hooked sessions. This is separate from SDK tracing and does not implement additional VS Code chat hooks.
 
 **Disable Model Logger** disconnects this window without stopping active agent work; the legacy personal hook is removed after the last enabled window disconnects. Trace failures are reported separately without discarding saved session data. The trace UI defaults to the existing local operator `auth-token`, with roles fetched from `/v2/identity`; the trace client also supports injected reader credentials. Scoped trace tokens cannot access legacy session endpoints.

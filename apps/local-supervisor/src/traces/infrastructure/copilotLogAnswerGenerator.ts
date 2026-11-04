@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { spawnAgentCli } from 'model-worklog-sdk';
+import { type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,7 +62,7 @@ export class CopilotLogAnswerGenerator implements LogAnswerGenerator {
 	constructor(options: CopilotLogAnswerOptions = {}) {
 		if (options.model !== undefined && (options.model.trim() === '' || options.model.length > 128)) { throw new Error('Invalid Copilot log-answer model.'); }
 		this.model = options.model;
-		this.launch = options.spawn ?? ((command, argumentsValue, configuration) => spawn(command, argumentsValue, { ...configuration, stdio: 'pipe' }));
+		this.launch = options.spawn ?? ((command, argumentsValue, configuration) => spawnAgentCli('copilot', argumentsValue, { ...configuration, stdio: 'pipe' }) as ChildProcessWithoutNullStreams);
 	}
 
 	async generate(question: string, evidence: Readonly<LogQueryResponse>, signal: AbortSignal, history: readonly Readonly<LogConversationMessage>[] = []): Promise<LogSynthesisResult> {
@@ -79,7 +80,7 @@ export class CopilotLogAnswerGenerator implements LogAnswerGenerator {
 				'--prompt', `${COPILOT_LOG_ANSWER_INSTRUCTIONS}\nEVIDENCE_JSON:\n${input}`,
 				'--silent', '--stream', 'off', '--output-format', 'text', '--available-tools',
 				'--deny-tool', 'shell', '--deny-tool', 'write', '--deny-tool', 'url', '--disallow-temp-dir', '--disable-builtin-mcps', '--no-custom-instructions',
-				'--no-ask-user', '--no-bash-env', '--no-remote-export', ...optionalFlags, '--no-color',
+				'--no-ask-user', '--no-bash-env', ...optionalFlags, '--no-color',
 				'--log-level', 'none', '--log-dir', join(directory, 'logs'),
 				...(this.model === undefined ? [] : ['--model', this.model]),
 			], { cwd: directory, windowsHide: true, env: { ...process.env, COPILOT_ALLOW_ALL: 'false' } });
@@ -98,9 +99,11 @@ export class CopilotLogAnswerGenerator implements LogAnswerGenerator {
 		const child = this.launch('copilot', ['--help'], { windowsHide: true, env: { ...process.env, COPILOT_ALLOW_ALL: 'false' } });
 		const help = await readAnswer(child, AbortSignal.any([signal, AbortSignal.timeout(5_000)]));
 		const required = ['--prompt', '--silent', '--stream', '--output-format', '--available-tools', '--deny-tool', '--disallow-temp-dir',
-			'--disable-builtin-mcps', '--no-custom-instructions', '--no-ask-user', '--no-bash-env', '--no-remote-export', '--no-color', '--log-level', '--log-dir'];
+			'--disable-builtin-mcps', '--no-custom-instructions', '--no-ask-user', '--no-bash-env', '--no-color', '--log-level', '--log-dir'];
 		if (required.some((flag) => !help.includes(flag))) { throw new Error('The installed Copilot CLI lacks required restricted log-answer capabilities.'); }
-		this.optionalFlags = Object.freeze(help.includes('--disable-client-telemetry') ? ['--disable-client-telemetry'] : []);
+		const history = help.includes('--sync-session') ? '--sync-session=off' : help.includes('--no-remote-export') ? '--no-remote-export' : undefined;
+		if (history === undefined) { throw new Error('The installed Copilot CLI cannot disable account history syncing.'); }
+		this.optionalFlags = Object.freeze([history, ...(help.includes('--disable-client-telemetry') ? ['--disable-client-telemetry'] : [])]);
 		return this.optionalFlags;
 	}
 }

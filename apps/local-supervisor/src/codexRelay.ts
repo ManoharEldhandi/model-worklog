@@ -1,8 +1,8 @@
-import { spawn, type SpawnOptions } from 'node:child_process';
+import { type SpawnOptions } from 'node:child_process';
 import { basename, relative } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 
-import { CodexAppServerAdapter } from 'model-worklog-sdk';
+import { CodexAppServerAdapter, resolveAgentCli, spawnAgentCli } from 'model-worklog-sdk';
 import { normalizeOpenAIUsage } from 'model-worklog-sdk';
 import type { JsonObject, SessionState, TokenUsage } from 'model-worklog-schema';
 
@@ -131,8 +131,13 @@ function terminalState(status: unknown): Extract<SessionState, 'completed' | 'fa
 	return status === 'interrupted' || status === 'cancelled' ? 'interrupted' : status === 'failed' ? 'failed' : 'completed';
 }
 
+/** Resolve installed Codex, including GUI PATH fallbacks and explicit configuration. */
+export function resolveCodexCommand(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, canExecute?: (path: string) => boolean): string {
+	return resolveAgentCli('codex', { environment, platform, canExecute, ...(canExecute === undefined ? {} : { loginPath: () => '' }) }).command;
+}
+
 function nativeSpawn(command: string, argumentsValue: readonly string[], options: SpawnOptions): CodexChild {
-	return spawn(command, argumentsValue, options) as unknown as CodexChild;
+	return spawnAgentCli('codex', argumentsValue, options) as unknown as CodexChild;
 }
 
 /**

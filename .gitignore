@@ -26,3 +26,5 @@ artifacts/
 output/playwright/
 output/rag/
 .venv*/
+/.vscode/settings.json
+/.playwright-cli/

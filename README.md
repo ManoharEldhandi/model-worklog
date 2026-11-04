@@ -11,7 +11,7 @@ Metadata-only capture is the default. Content requires explicit opt-in. Hidden
 reasoning and uninstrumented actions are not observable. The core logger is
 released as [2.1.0](https://github.com/ManoharEldhandi/model-worklog/releases/tag/v2.1.0),
 including the [npm SDK](https://www.npmjs.com/package/model-worklog-sdk).
-The new SDK RAG layer is available from **`feat/local-log-rag`**; it is not yet
+The SDK RAG layer is available from the **`main` source checkout**; it is not yet
 part of the published 2.1.0 packages.
 
 ## Install
@@ -67,7 +67,7 @@ available. They are not required for the new tracing SDK.
 
 ### Run Logger + RAG With One Command
 
-From this checkout on **`feat/local-log-rag`**:
+From this checkout on **`main`**:
 
 ```sh
 git branch --show-current
@@ -76,20 +76,25 @@ bash scripts/run-rag.sh
 
 The launcher checks dependencies, installs missing Node/Python runtimes locally,
 installs locked JavaScript and pinned Python packages, builds the SDK, and starts
-Chroma plus CPU embedding/reranking models. It records sample logs, retrieves a
-cited answer, and opens an **Ask logs** terminal prompt. No API key or extension
-is needed. First use downloads model weights; later runs reuse the cache.
+Chroma plus CPU embedding/reranking models, then opens the browser demo. In
+**Ask logs**, choose **Inventory review** or **Refund investigation** and click
+**Record sample**. Ask a question, follow up, or open a citation to inspect its
+source. You can also capture a real workspace review on the left.
+
+Local search needs no API key. Natural-language explanations use your installed
+Copilot CLI and its login (`copilot login`). If Copilot is unavailable, local
+summaries and source inspection still work. First use downloads model weights.
 
 ```sh
-bash scripts/run-rag.sh --no-chat    # Record, answer and exit
-bash scripts/run-rag.sh --check      # Full live integration + precision/recall + ANN checks
+bash scripts/run-rag.sh --no-open    # Start the website and print its URL
+bash scripts/run-rag.sh --check      # Browser, integration, precision/recall and ANN checks
 bash scripts/run-rag.sh --setup-only # Install dependencies and build
 ```
 
 Use macOS or glibc Linux; on Windows, use WSL2. Bash, tar, and curl or wget must
 be available. Installs stay in the checkout; model weights are cached under
 `~/.cache/model-worklog/models`. No sudo or shell-profile changes are made.
-Exit or Ctrl+C stops the services and removes the temporary demo index. Quality
+Ctrl+C in the terminal stops the services and removes the temporary demo index. Quality
 reports and service logs are saved in `output/rag/`. See [setup details](docs/sdk-rag.md).
 
 ### Web Dashboard Demo
@@ -101,7 +106,6 @@ they arrive. The dashboard starts an isolated loopback collector with temporary
 scoped credentials, so the browser never receives a collector token.
 
 ```sh
-npm run build
 npm run demo:web
 ```
 
@@ -171,8 +175,8 @@ store, source, reranker or answer provider. No editor is required. See the
 
 ### Measured RAG Quality
 
-The live quality gate passed **22 SDK checks** and ranked the relevant source
-first for **all 32 curated test questions**:
+The SDK retrieval evaluation ranked the relevant source first for
+**all 32 curated test questions**:
 
 | Measurement | Recorded result |
 | --- | ---: |

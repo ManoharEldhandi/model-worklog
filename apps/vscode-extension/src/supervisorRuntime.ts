@@ -22,6 +22,7 @@ export type SpawnSupervisor = (command: string, argumentsValue: readonly string[
 
 export interface SupervisorRuntimeOptions {
 	readonly extensionPath: string;
+	readonly environment?: () => NodeJS.ProcessEnv;
 	readonly spawnSupervisor?: SpawnSupervisor;
 	readonly probe?: (url: URL) => Promise<SupervisorConnection>;
 	readonly now?: () => number;
@@ -78,7 +79,7 @@ export class SupervisorRuntime {
 		if (this.child === undefined || this.child.exitCode !== null) {
 			this.startupFailure = undefined;
 			this.child = this.spawnSupervisor(process.execPath, [bundledSupervisorPath(this.options.extensionPath)], {
-				env: supervisorEnvironment(url), detached: true, stdio: 'ignore', windowsHide: true,
+				env: supervisorEnvironment(url, this.options.environment?.()), detached: true, stdio: 'ignore', windowsHide: true,
 			});
 			this.child.once('error', (error) => {
 				this.startupFailure = error instanceof Error ? error.message : String(error);

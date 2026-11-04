@@ -25,20 +25,23 @@ flowchart LR
 ## Run the example
 
 For automatic setup on macOS or glibc Linux (Windows: WSL2), run from the
-`feat/local-log-rag` checkout:
+`main` source checkout:
 
 ```sh
 bash scripts/run-rag.sh
 ```
 
-It checks Node >=22.13, Python 3.13 and all JavaScript/Python dependencies,
-installs missing components locally, builds, starts isolated services, records a
-sample refund failure and opens a terminal prompt for questions. No model account
-is needed. Type `exit` or press Ctrl+C to stop. The sample index is temporary,
-and answers show captured log excerpts with citations.
+It installs missing dependencies, builds, starts local Chroma and CPU models,
+and opens the browser demo. Choose an inventory or refund sample in **Ask logs**,
+then click **Record sample**. Questions use SDK hybrid retrieval; Copilot turns
+the evidence into an answer with citations. Its CLI must already be authenticated
+with `copilot login`. Local summaries remain available without a model account.
+Stop with Ctrl+C in the terminal; the sample store is temporary.
 
-Use `--no-chat` for one sample answer, `--check` for the complete live quality
-gate, or `--setup-only` to prepare dependencies without starting services.
+Use `--no-open` to print the website URL without opening a tab, `--check` for the
+live SDK/browser and retrieval-quality checks, or `--setup-only` to prepare the
+dependencies. `--cli` opens the optional terminal evidence inspector; `--no-chat`
+runs one low-level SDK example and exits.
 The script requires Bash, tar, and curl or wget. Missing Node is downloaded from
 nodejs.org and SHA-256 checked; missing Python is provisioned with
 [uv](https://docs.astral.sh/uv/guides/install-python/). Private runtimes live in
@@ -50,6 +53,12 @@ an existing Python 3.13 environment; `MODEL_WORKLOG_MODEL_CACHE` changes the cac
 The launcher prints the branch/commit and writes diagnostic logs in `output/rag/`.
 It cleans up its own local services and temporary data on exit. Do not run it
 alongside other builds/tests in the same checkout.
+
+The browser keeps answers separate from raw records. Open a citation to inspect
+its evidence. The refund sample records a 190-day payment age and a 180-day
+window, with no amount; asking for the amount should say that it wasn't captured.
+Exact counts come from the scoped collector, while passages come from Chroma,
+BM25 and RRF. Changing the scope clears the conversation.
 
 ### Manual setup
 

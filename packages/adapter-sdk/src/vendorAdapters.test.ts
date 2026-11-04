@@ -90,6 +90,13 @@ test('Codex App Server adapter marks unmapped notifications as unsupported', asy
 	assert.deepEqual(sink.calls, [{ method: 'unknown:adapter.lifecycle:unsupported-capability', payload: { adapter: 'codex-app-server', method: 'future/event', message: 'The notification is not mapped by this adapter version.' } }]);
 });
 
+test('Codex provider errors remain visible and redacted instead of becoming unknown protocol notices', async () => {
+	const sink = new RecordingSink(); const adapter = new CodexAppServerAdapter(sink);
+	await adapter.ingestNotification({ method: 'error', params: { error: { message: 'The configured model is unavailable. token=private-example' }, willRetry: false } });
+	assert.equal(sink.calls[0]?.method, 'adapter.lifecycle');
+	assert.deepEqual(sink.calls[0]?.payload, { adapter: 'codex-app-server', phase: 'failed', userFacing: true, message: 'The configured model is unavailable. token=[REDACTED]' });
+});
+
 test('Codex App Server adapter retains visible summaries and command output but suppresses raw reasoning', async () => {
 	const sink = new RecordingSink();
 	const adapter = new CodexAppServerAdapter(sink, { workspacePath: '/workspace' });

@@ -43,11 +43,12 @@ function isModelWorklogHook(value: unknown): boolean {
 
 function hookConfig(options: CopilotHookInstallOptions): string {
 	const environment = {
+		ELECTRON_RUN_AS_NODE: '1',
 		MODEL_WORKLOG_HOOK_BRIDGE: '1',
 		MODEL_WORKLOG_SUPERVISOR_URL: options.supervisorUrl,
 		...(options.modelWorklogHome === undefined ? {} : { MODEL_WORKLOG_HOME: options.modelWorklogHome }),
 	};
-	const entry = { type: 'command', exec: 'node', args: ['-e', HOOK_LAUNCHER, options.bridgePath], env: environment, timeoutSec: 3 };
+	const entry = { type: 'command', exec: process.execPath, args: ['-e', HOOK_LAUNCHER, options.bridgePath], env: environment, timeoutSec: 3 };
 	return `${JSON.stringify({ version: 1, hooks: Object.fromEntries(HOOK_EVENTS.map((event) => [event, [entry]])) }, null, 2)}\n`;
 }
 

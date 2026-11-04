@@ -4,6 +4,10 @@ For Chroma HNSW, embeddings, BM25/RRF, application integration and measured
 retrieval quality, use the [SDK RAG guide](sdk-rag.md). This page describes the
 existing collector query endpoint and its compatibility clients.
 
+The browser started by `npm run demo:web` uses SDK hybrid retrieval with exact
+collector counts. The collector API sections below also apply to the existing
+CLI and VS Code query commands.
+
 This feature is available from the source branch with matching locally built
 packages. It does not imply a new npm or Marketplace publication.
 
@@ -179,8 +183,9 @@ Copilot runs in a private empty temporary working directory with an empty
 available-tool set, denied `shell`, `write`, and `url` permission kinds, disabled
 built-in MCPs/custom instructions, no user-interaction tools, and no remote export.
 Evidence is supplied through a bounded prompt because the qualified CLI prompt
-mode does not consume piped JSON context. The installed CLI must support those
-flags. The answerer does not reuse the workspace-review agent's tool permissions.
+mode does not consume piped JSON context. The installed CLI must support the required restrictions. Account history
+sync is disabled with `--sync-session=off` on current CLIs or
+`--no-remote-export` on older versions. The answerer does not reuse the workspace-review agent's tool permissions.
 Copilot remains a trusted local provider process, not an OS sandbox; its own
 authenticated account and private session storage are governed by Copilot.
 

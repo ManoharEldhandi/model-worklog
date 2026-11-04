@@ -171,7 +171,8 @@ export function createLogConversation({ getTraceId }) {
 		turn.label.textContent = answer.generation.status === 'generated' ? answer.generation.provider === 'github-copilot' ? 'Copilot' : 'Assistant' : answer.generation.status === 'fallback' ? 'Evidence fallback' : 'Evidence';
 		const sources = sourceDetails(answer, `turn-${++sequence}`);
 		turn.body.replaceChildren(markdownContent(answer.answer, sources.citations));
-		turn.assistant.append(node('p', 'answer-provenance', `${answer.evidence.length} evidence records | ${answer.snapshotAt.slice(11, 19)} UTC${answer.retrieval.contextExpanded ? ' | contextual retrieval' : ''}`), sources.details);
+		const retrieval = answer.retrieval.semantic ? answer.retrieval.semantic.degraded ? 'Keyword search fallback' : 'Semantic log search' : answer.retrieval.contextExpanded ? 'Contextual retrieval' : 'Captured logs';
+		turn.assistant.append(node('p', 'answer-provenance', `${retrieval} · ${answer.evidence.length} source passages`), sources.details);
 		status.textContent = answer.generation.status === 'generated' ? 'Answered from captured logs' : answer.generation.status === 'fallback' ? 'AI unavailable; evidence fallback' : 'Evidence-only answer';
 		exportButton.disabled = false;
 	}
@@ -208,6 +209,7 @@ export function createLogConversation({ getTraceId }) {
 	}
 
 	form.addEventListener('submit', (event) => { event.preventDefault(); void ask(); });
+	for (const button of document.querySelectorAll('[data-log-question]')) { button.addEventListener('click', () => { void ask(button.dataset.logQuestion); }); }
 	input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!submit.disabled) { form.requestSubmit(); } } });
 	stop.addEventListener('click', () => pending?.controller.abort());
 	document.querySelector('#query-new').addEventListener('click', () => { clear(); input.focus(); });

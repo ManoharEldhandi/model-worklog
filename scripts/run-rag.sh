@@ -4,9 +4,11 @@ set -euo pipefail
 
 usage() {
   cat <<'HELP'
-Usage: bash scripts/run-rag.sh [--check | --no-chat | --setup-only]
+Usage: bash scripts/run-rag.sh [--check | --no-open | --cli | --no-chat | --setup-only]
 
-  default       Install missing dependencies, build, record sample logs and chat.
+  default       Install missing dependencies, build and open the browser RAG demo.
+  --no-open     Start the browser demo and print its URL without opening a tab.
+  --cli         Use the optional terminal evidence inspector.
   --no-chat     Run the sample and a cited answer, then stop the local services.
   --check       Run live integration, precision/recall and HNSW accuracy checks.
   --setup-only  Install dependencies and build without starting local services.
@@ -18,7 +20,7 @@ HELP
 }
 
 mode="${1:-demo}"
-case "$mode" in demo|--check|--no-chat|--setup-only) ;; -h|--help) usage; exit 0 ;; *) usage >&2; exit 2 ;; esac
+case "$mode" in demo|--check|--no-open|--cli|--no-chat|--setup-only) ;; -h|--help) usage; exit 0 ;; *) usage >&2; exit 2 ;; esac
 if [ "$#" -gt 1 ]; then usage >&2; exit 2; fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -142,6 +144,6 @@ fi
 if [ "$mode" != '--check' ]; then npm run build; fi
 case "$mode" in
   --setup-only) printf 'SDK RAG dependencies and build are ready.\n' ;;
-  --check) npm run test:rag:live ;;
+  --check) npx playwright install chromium; npm run test:rag:browser ;;
   *) exec node scripts/run-rag.mjs "$mode" ;;
 esac

@@ -27,8 +27,8 @@
     "demo:model": "node examples/dummy-model-run.mjs",
     "demo:live": "node examples/live-agent-demo.mjs",
     "demo:trace": "node examples/sdk-tracing-demo.mjs",
-    "demo:web": "node examples/web-dashboard/server.mjs",
-    "test:demo:web": "node --test --test-timeout=30000 examples/web-dashboard/server.test.mjs",
+    "demo:web": "bash scripts/run-rag.sh",
+    "test:demo:web": "node --test --test-timeout=30000 \"examples/web-dashboard/*.test.mjs\"",
     "test:browser": "playwright test --config examples/web-dashboard/playwright.config.mjs",
     "test:copilot:rag": "node scripts/qualify-copilot-rag.mjs",
     "test:rag": "npm run build && tsc -p packages/adapter-sdk/tsconfig.test.json && node --test \"packages/adapter-sdk/test-dist/rag/*.test.js\" examples/rag/evaluation/metrics.test.mjs",
@@ -43,7 +43,8 @@
     "package:extension": "npm --prefix apps/vscode-extension run vsix",
     "pack:check": "npm run build && npm pack --dry-run --workspace model-worklog-schema && npm pack --dry-run --workspace model-worklog-supervisor && npm pack --dry-run --workspace model-worklog && npm pack --dry-run --workspace model-worklog-sdk",
     "rag:demo": "bash scripts/run-rag.sh",
-    "test:rag:launcher": "node --test scripts/run-rag.test.mjs"
+    "test:rag:launcher": "node --test scripts/run-rag.test.mjs",
+    "test:rag:browser": "npm run build && tsc -p packages/adapter-sdk/tsconfig.test.json && node examples/rag/run-live-tests.mjs --browser"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

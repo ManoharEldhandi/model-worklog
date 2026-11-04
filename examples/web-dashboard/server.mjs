@@ -9,7 +9,9 @@ import { createLocalModelLogger, LocalSupervisorClient } from 'model-worklog-sdk
 import { buildSessionLog, buildTraceLog, LogQueryRequestSchema, parseSessionEvent, redactAttributes, redactSensitiveText, SpanIdSchema, TraceDetailSchema, TraceIdSchema } from 'model-worklog-schema';
 import { CopilotLogAnswerGenerator, createTraceCredential, OpenAiLogAnswerGenerator, startSupervisor } from 'model-worklog-supervisor';
 
-import { captureSampleReview } from './sampleCapture.mjs';
+import { captureRefundReview, captureSampleReview } from './sampleCapture.mjs';
+import { createSdkLogQuery } from './sdkLogQueries.mjs';
+import { ChromaLogVectorStore, HttpLogRagReranker, LogRag, OpenAiLogEmbedder } from 'model-worklog-sdk/rag';
 import { projectActivitySpans, projectToolSpans } from './toolProjection.mjs';
 
 const PROJECT_ID = 'web-demo';
@@ -458,12 +460,13 @@ function publicRun(run) {
 
 async function executeSampleRun(run, context) {
 	try {
-		const result = await captureSampleReview({ endpoint: context.collector.url, token: context.writerToken, projectId: PROJECT_ID, workspacePath: context.workspacePath, onEvent: (kind, payload, correlationId) => addEvent(run, kind, payload, correlationId) });
+		const capture = run.scenario === 'refund' ? captureRefundReview : captureSampleReview;
+		const result = await capture({ endpoint: context.collector.url, token: context.writerToken, projectId: PROJECT_ID, workspacePath: context.workspacePath, onEvent: (kind, payload, correlationId) => addEvent(run, kind, payload, correlationId) });
 		run.traceId = result.traceId;
 		run.delivery = result.delivery;
 		run.storedTrace = await loadTrace(context.collector, context.readerToken, result.traceId);
 		run.trace = summarizeTrace(run.storedTrace);
-		run.response = 'Sample capture complete: 120 file reads, one workspace search, and one handled stock validation failure.';
+		run.response = run.scenario === 'refund' ? 'Refund review captured. The payment was outside the refund window; the amount was not recorded.' : 'Sample capture complete: 120 file reads, one workspace search, and one handled stock validation failure.';
 		run.status = 'completed';
 		addEvent(run, 'session.completed', {});
 	} catch (error) {
@@ -500,11 +503,12 @@ function rememberRun(runs, run) {
 	runs.set(run.id, run);
 }
 
-function publicConfig(provider, modelSynthesis) {
+function publicConfig(provider, modelSynthesis, semanticSearch) {
 	return {
 		collector: 'temporary local collector',
 		mode: provider.kind,
 		modelSynthesis,
+		semanticSearch,
 		provider: provider.kind === 'copilot' ? 'GitHub Copilot CLI' : provider.kind === 'offline-demo' ? 'Built-in demo responder' : 'OpenAI-compatible endpoint',
 		workspace: { files: SAMPLE_WORKSPACE_FILES, label: 'Harbor Inventory isolated workspace copy' },
 	};
@@ -539,6 +543,13 @@ export async function startWebDashboard(options = {}) {
 		createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'writer', url: collector.url }),
 		createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'reader', url: collector.url }),
 	]);
+	const ragOptions = options.ragOptions ?? (process.env.MODEL_WORKLOG_CHROMA_URL && process.env.MODEL_WORKLOG_EMBEDDING_URL ? {
+		store: new ChromaLogVectorStore({ url: process.env.MODEL_WORKLOG_CHROMA_URL, collection: `web-demo-${randomUUID()}` }),
+		embedder: new OpenAiLogEmbedder({ endpoint: process.env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
+		...(process.env.MODEL_WORKLOG_RERANK_URL ? { reranker: new HttpLogRagReranker(process.env.MODEL_WORKLOG_RERANK_URL) } : {}),
+	} : undefined);
+	const rag = options.rag ?? (ragOptions ? new LogRag(ragOptions) : undefined);
+	const queryLogs = rag ? createSdkLogQuery({ client: new LocalSupervisorClient({ supervisorUrl: collector.url, token: reader.token }), rag, generator: logAnswerGenerator }) : undefined;
 	await supervisorRequest(collector, collector.authToken, '/v1/workspaces/trust', 'POST', { workspacePath });
 	const runs = new Map();
 	const activeQueries = new Set();
@@ -560,7 +571,12 @@ export async function startWebDashboard(options = {}) {
 				const abort = () => cancellation.abort();
 				response.once('close', abort);
 				try {
-					sendJson(response, 200, await supervisorRequest(collector, reader.token, '/v2/logs/query', 'POST', parsed.data, { timeoutMs: 55_000, signal: cancellation.signal }));
+					let answer;
+					if (queryLogs) {
+						try { answer = await queryLogs(parsed.data, cancellation.signal); }
+						catch { cancellation.signal.throwIfAborted(); throw new DashboardHttpError(503, 'Semantic log search is unavailable. Restart the RAG demo and check its local service logs.'); }
+					} else { answer = await supervisorRequest(collector, reader.token, '/v2/logs/query', 'POST', parsed.data, { timeoutMs: 55_000, signal: cancellation.signal }); }
+					sendJson(response, 200, answer);
 				} finally { activeQueries.delete(cancellation); response.removeListener('close', abort); }
 				return;
 			}
@@ -577,16 +593,16 @@ export async function startWebDashboard(options = {}) {
 			}
 			if (request.method === 'POST' && url.pathname === '/api/logs/sample') {
 				const body = await readRequestBody(request);
-				if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) { throw new DashboardHttpError(400, 'Sample capture expects an empty object.'); }
+				if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'scenario') || (body.scenario !== undefined && !['inventory', 'refund'].includes(body.scenario))) { throw new DashboardHttpError(400, 'Choose the inventory or refund sample.'); }
 				if ([...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'A capture is already running.'); }
-				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message: 'Inventory sample capture', status: 'running' };
+				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), scenario: body.scenario ?? 'inventory', message: body.scenario === 'refund' ? 'Refund investigation sample' : 'Inventory sample capture', status: 'running' };
 				rememberRun(runs, run);
 				activeSample = executeSampleRun(run, { collector, writerToken: writer.token, readerToken: reader.token, workspacePath }).finally(() => { activeSample = undefined; });
 				sendJson(response, 202, { runId: run.id });
 				return;
 			}
 			if (request.method === 'GET' && url.pathname === '/api/config') {
-				sendJson(response, 200, publicConfig(provider, logAnswerGenerator !== undefined));
+				sendJson(response, 200, publicConfig(provider, logAnswerGenerator !== undefined, rag !== undefined));
 				return;
 			}
 			if (request.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/download')) {

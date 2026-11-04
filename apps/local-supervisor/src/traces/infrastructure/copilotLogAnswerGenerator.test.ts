@@ -68,6 +68,26 @@ test('older compatible CLIs answer without an unsupported optional telemetry fla
 	assert.match((await generator.generate('tools', evidence, AbortSignal.timeout(2000))).answer, /120/);
 });
 
+test('current CLIs disable account history sync using the renamed flag', async () => {
+	const generator = new CopilotLogAnswerGenerator({ spawn: (_command, args) => {
+		if (args.includes('--help')) { return childProcess(supportedFlags.replace('--no-remote-export', '--sync-session[=<on|off>]')); }
+		assert.ok(args.includes('--sync-session=off')); assert.ok(!args.includes('--no-remote-export'));
+		assert.ok(args.includes('--available-tools')); assert.ok(args.includes('--deny-tool'));
+		return childProcess('One recorded tool call. [A1]');
+	} });
+	assert.match((await generator.generate('tools', evidence, AbortSignal.timeout(2000))).answer, /One recorded/);
+});
+
+test('CLIs with no supported history-sync restriction never receive evidence', async () => {
+	let prompts = 0;
+	const generator = new CopilotLogAnswerGenerator({ spawn: (_command, args) => {
+		if (args.includes('--prompt')) { prompts++; }
+		return childProcess(supportedFlags.replace('--no-remote-export', ''));
+	} });
+	await assert.rejects(generator.generate('private-evidence-marker', evidence, AbortSignal.timeout(2000)));
+	assert.equal(prompts, 0);
+});
+
 test('missing mandatory restrictions prevent evidence from being passed to the CLI', async () => {
 	let prompts = 0;
 	const generator = new CopilotLogAnswerGenerator({ spawn: (_command, args) => {
