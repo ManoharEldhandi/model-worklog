@@ -31,7 +31,8 @@ npm run demo:web
 The default workspace agent is Codex with `gpt-5.6-terra`, authenticated with
 `codex login`. Model calls use that account. Copy `.env.example` to `.env` and
 set `MODEL_WORKLOG_DEMO_WORKSPACE` to choose a local default without committing
-a personal path. The page shows the folder name, never the default absolute path.
+a personal path. Workspace configuration exposes the folder name rather than
+its absolute path; captured activity can still contain file paths.
 
 1. Start with the sample, or enter a project folder and click **Use folder**.
    The sample uses a temporary copy; custom folders are edited directly.

@@ -82,8 +82,8 @@ The launcher creates `.env` from `.env.example` on first use. Edit it to set the
 default project folder and model. `.env` is ignored by Git; keep personal paths and credentials there. The default is the
 included Harbor Inventory sample, run in a temporary copy. To work on another
 project, enter its folder in the dashboard and click **Use folder**. Those tasks
-work on the selected folder directly. The default absolute path is never sent
-to the page; the dashboard shows only the folder name.
+work on the selected folder directly. Workspace configuration shows only the folder name; captured activity can
+include file paths.
 
 1. In workspace chat, ask **Read the inventory and pricing code, run npm test,
    and explain what fails.**
