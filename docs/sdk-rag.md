@@ -31,12 +31,18 @@ For automatic setup on macOS or glibc Linux (Windows: WSL2), run from the
 bash scripts/run-rag.sh
 ```
 
-It installs missing dependencies, builds, starts local Chroma and CPU models,
-and opens the browser demo. Choose an inventory or refund sample in **Ask logs**,
-then click **Record sample**. Questions use SDK hybrid retrieval; Copilot turns
-the evidence into an answer with citations. Its CLI must already be authenticated
-with `copilot login`. Local summaries remain available without a model account.
-Stop with Ctrl+C in the terminal; the sample store is temporary.
+It installs missing dependencies, builds, and opens the dashboard with local
+Chroma, embeddings and reranking. Copy `.env.example` to `.env` to configure the
+default workspace; personal paths stay in this ignored file. The dashboard also
+accepts a folder path. The included sample runs in a temporary copy; custom
+folders are used directly. Switching folders clears the current log session.
+
+Workspace chat uses Codex with `gpt-5.6-terra` by default and requires `codex login`.
+Ask it to inspect the code and run tests, then fix the sample's negative quantity
+bug. In **Ask logs**, ask about the observed failure, changed files or test
+results. Answers use retrieved logs and citations. Select **All retained traces**
+to compare tasks. Stop with Ctrl+C; temporary trace data is removed, while
+changes made to a custom project stay in that project.
 
 Use `--no-open` to print the website URL without opening a tab, `--check` for the
 live SDK/browser and retrieval-quality checks, or `--setup-only` to prepare the
@@ -55,10 +61,9 @@ It cleans up its own local services and temporary data on exit. Do not run it
 alongside other builds/tests in the same checkout.
 
 The browser keeps answers separate from raw records. Open a citation to inspect
-its evidence. The refund sample records a 190-day payment age and a 180-day
-window, with no amount; asking for the amount should say that it wasn't captured.
-Exact counts come from the scoped collector, while passages come from Chroma,
-BM25 and RRF. Changing the scope clears the conversation.
+its evidence. Exact counts come from the scoped collector; passages come from
+Chroma, BM25 and RRF. The answer model receives captured evidence, not workspace
+tool access. Local summaries remain available when answer generation fails.
 
 ### Manual setup
 

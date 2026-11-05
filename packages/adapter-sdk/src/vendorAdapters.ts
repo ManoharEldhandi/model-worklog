@@ -321,7 +321,7 @@ export class CodexAppServerAdapter {
 				await this.session.unknown('agent.message', 'not-observed', { adapter: 'codex-app-server', method, message: 'Message delta did not include text.' });
 				return { emitted: 1, completed: false };
 			}
-			await record('agent.message', { text, source: 'assistant-commentary', delta: true }, optionalString(params.itemId) ?? correlationId);
+			await record('agent.message', { role: 'assistant', text, source: 'assistant-commentary', delta: true }, optionalString(params.itemId) ?? correlationId);
 			return { emitted, completed: false };
 		}
 		if (method === 'item/plan/delta' || method === 'item/reasoning/summaryTextDelta') {
@@ -404,6 +404,10 @@ export class CodexAppServerAdapter {
 					...(method === 'item/completed' && typeof item.exitCode === 'number' ? { exitCode: item.exitCode } : {}),
 					...(method === 'item/completed' && typeof item.durationMs === 'number' ? { durationMs: item.durationMs } : {}),
 				}, itemCorrelation);
+				if (method === 'item/completed' && typeof item.aggregatedOutput === 'string' && item.aggregatedOutput !== '') {
+					await record('process.output', { stream: 'stdout', text: redactSensitiveText(item.aggregatedOutput).slice(0, 16_000), source: 'codex-command', final: true,
+						...(item.aggregatedOutput.length > 16_000 ? { truncated: true } : {}) }, itemCorrelation);
+				}
 				return { emitted, completed: false };
 			}
 			if (itemType === 'fileChange' && method === 'item/completed') {
@@ -427,7 +431,7 @@ export class CodexAppServerAdapter {
 			if (itemType === 'agentMessage' && method === 'item/completed') {
 				const text = optionalString(item.text);
 				if (text !== undefined) {
-					await record('agent.summary', { summary: text, final: true }, itemCorrelation);
+					await record('agent.message', { role: 'assistant', text, final: true, ...(optionalString(item.phase) === undefined ? {} : { phase: optionalString(item.phase) as string }) }, itemCorrelation);
 					return { emitted, completed: false };
 				}
 			}

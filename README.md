@@ -74,16 +74,26 @@ git branch --show-current
 bash scripts/run-rag.sh
 ```
 
-The launcher checks dependencies, installs missing Node/Python runtimes locally,
-installs locked JavaScript and pinned Python packages, builds the SDK, and starts
-Chroma plus CPU embedding/reranking models, then opens the browser demo. In
-**Ask logs**, choose **Inventory review** or **Refund investigation** and click
-**Record sample**. Ask a question, follow up, or open a citation to inspect its
-source. You can also capture a real workspace review on the left.
+The launcher installs missing dependencies, builds the SDK, starts Chroma and
+local embedding/reranking models, then opens the dashboard. Codex uses
+`gpt-5.6-terra` and your existing CLI login (`codex login`).
 
-Local search needs no API key. Natural-language explanations use your installed
-Copilot CLI and its login (`copilot login`). If Copilot is unavailable, local
-summaries and source inspection still work. First use downloads model weights.
+The launcher creates `.env` from `.env.example` on first use. Edit it to set the
+default project folder and model. `.env` is ignored by Git; keep personal paths and credentials there. The default is the
+included Harbor Inventory sample, run in a temporary copy. To work on another
+project, enter its folder in the dashboard and click **Use folder**. Those tasks
+work on the selected folder directly. Workspace configuration shows only the folder name; captured activity can
+include file paths.
+
+1. In workspace chat, ask **Read the inventory and pricing code, run npm test,
+   and explain what fails.**
+2. Ask **Fix the negative quantity bug and rerun the tests.**
+3. Open **Ask logs** and ask **Which test failed and why?** or **What changed?**
+   Use **All retained traces** to compare tasks, or **Latest capture** for one run.
+
+Log questions search captured activity through SDK RAG and return cited answers;
+they do not rerun the workspace task. Switching folders starts a fresh log
+session. Model calls use your Codex account; retrieval runs locally.
 
 ```sh
 bash scripts/run-rag.sh --no-open    # Start the website and print its URL
@@ -99,36 +109,17 @@ reports and service logs are saved in `output/rag/`. See [setup details](docs/sd
 
 ### Web Dashboard Demo
 
-Run a local browser dashboard that asks GitHub Copilot to review an isolated
-copy of the included Harbor Inventory sample workspace. It shows observable
-Copilot file reads, tool activity, visible responses, and enclosing SDK spans as
-they arrive. The dashboard starts an isolated loopback collector with temporary
-scoped credentials, so the browser never receives a collector token.
+The dashboard pairs a workspace agent with its captured activity and a log
+conversation. Run `npm run demo:web` for the same setup as the launcher above.
+Use `MODEL_WORKLOG_DEMO_MODEL` in `.env` to choose another account-supported
+Codex model. `MODEL_WORKLOG_DEMO_PROVIDER=copilot` selects an authenticated
+Copilot CLI instead (reviews are read-only). `offline-demo` enables an explicitly
+labelled scripted example without a model account.
 
-```sh
-npm run demo:web
-```
-
-Open the printed `http://127.0.0.1:...` URL. To connect an OpenAI-compatible
-chat-completions endpoint instead, configure its values only in the server
-environment:
-
-```sh
-export MODEL_WORKLOG_DEMO_PROVIDER='openai-compatible'
-export MODEL_WORKLOG_DEMO_OPENAI_URL='https://provider.example/v1/chat/completions'
-export MODEL_WORKLOG_DEMO_OPENAI_MODEL='your-model-name'
-export MODEL_WORKLOG_DEMO_OPENAI_API_KEY='your-provider-key'
-npm run demo:web
-```
-
-The default provider is the locally installed Copilot CLI, which must already
-be authenticated with `copilot login`. To run the dashboard without any model
-account, select the built-in response explicitly:
-
-```sh
-export MODEL_WORKLOG_DEMO_PROVIDER='offline-demo'
-npm run demo:web
-```
+An OpenAI-compatible chat endpoint can be configured with server-only
+`MODEL_WORKLOG_DEMO_PROVIDER=openai-compatible`, `MODEL_WORKLOG_DEMO_OPENAI_URL`,
+`MODEL_WORKLOG_DEMO_OPENAI_MODEL`, and `MODEL_WORKLOG_DEMO_OPENAI_API_KEY`.
+That provider answers chat requests; it does not run a workspace agent.
 
 The process deletes its temporary local trace store when it stops. The visible
 timeline reports explicit SDK operations and output only; it does not claim to
@@ -201,15 +192,14 @@ npm run cli -- ask "How many times was read_file used?" --project default
 
 **Ask logs** is a conversation grounded in captured requests, replies, files,
 tools, errors, timing, models, and reported usage. Ask for a summary, follow up
-with **What did it answer?**, or investigate a failure. Copilot explains retrieved
+with **What did it answer?**, or investigate a failure. The configured model explains retrieved
 evidence with inline citations; counts and source records are supporting details,
 not the primary view. Tool totals still come from exact SQL, not a prompt sample.
 
-The Copilot demo enables restricted, tool-disabled log answers; questions do not
-rerun the workspace agent. Local evidence-only mode remains available without an
-AI account. Choose **Record sample** for a repeatable 122-tool-call workload, or
-capture a real workspace review. See the [conversation and API guide](docs/log-retrieval.md)
-for provider consent, scope, legacy-session coverage, privacy, and limits.
+Log answers run separately with workspace tools disabled. In offline mode,
+**Load offline example** records a scripted inventory workload for source
+inspection. See the [conversation and API guide](docs/log-retrieval.md) for
+scope, privacy and limits.
 
 ## Privacy
 

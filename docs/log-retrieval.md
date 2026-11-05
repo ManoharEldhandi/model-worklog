@@ -14,7 +14,7 @@ packages. It does not imply a new npm or Marketplace publication.
 Ask questions over retained, redacted trace spans without loading entire logs
 into a prompt. **Ask logs is a conversation**, not a tool-count dashboard. The
 retrieval layer finds relevant requests, responses, files, tools, errors, timing,
-models, and reported usage. Copilot or an OpenAI-compatible provider explains
+models, and reported usage. The configured answer provider explains
 that evidence in natural language and supports follow-ups. Exact aggregates come
 from SQLite rather than being estimated from a prompt sample.
 
@@ -28,37 +28,34 @@ npm run build
 npm run demo:web
 ```
 
-The default provider is the installed Copilot CLI, authenticated with
-`copilot login`. Model calls use that account and can consume AI credits.
+The default workspace agent is Codex with `gpt-5.6-terra`, authenticated with
+`codex login`. Model calls use that account. Copy `.env.example` to `.env` and
+set `MODEL_WORKLOG_DEMO_WORKSPACE` to choose a local default without committing
+a personal path. Workspace configuration exposes the folder name rather than
+its absolute path; captured activity can still contain file paths.
 
-1. Open the printed loopback URL. Send a workspace-review request on the left
-  to capture a real Copilot run, or choose **Ask logs > Record sample** to
-  perform a repeatable local workload.
-2. In **Ask logs**, keep **Copilot answers** enabled and ask **Summarize this
-  run**, **What did the user ask?**, **What did it answer?**, or **Which files
-  were read?**. Copilot receives retrieved log evidence, not workspace access.
-3. Continue with **Why did it do that?**, **What failed?**, **Which model was
-  used?**, or **How many times was view used?**. Each turn retrieves fresh
-  scoped evidence; earlier AI replies are not treated as ground truth.
-4. Click an inline citation to open its evidence. Exact counts and tool tables
-  are supporting details, collapsed beneath each reply rather than the primary
-  experience. **Open retained source** reads the original span revision currently
-  retained by the collector; it may have advanced since the answer snapshot.
-5. Use **Stop**, **Retry**, **New chat**, scope/time/tool filters, or **Export
-  chat** as needed. Scope changes clear history and abort an outstanding answer.
+1. Start with the sample, or enter a project folder and click **Use folder**.
+   The sample uses a temporary copy; custom folders are edited directly.
+2. In workspace chat, ask the agent to inspect code and run tests. The sample
+   has one intentionally failing pricing test; a follow-up can fix it.
+3. Open **Ask logs**, keep **Codex answers** enabled, and ask about failures,
+   changed files, test output or the agent's reply. Use **All retained traces**
+   to compare tasks. Each turn retrieves fresh evidence.
+4. Open a citation to inspect the source. Exact counts are under the aggregate
+   citation; **Open retained source** reads the stored span revision.
+5. Use **Stop**, **Retry**, **New chat**, filters or **Export chat** as needed.
 
-The sample records **122 tool calls**: `read_file` 120, `search_workspace` 1,
-and `validate_stock` 1. Its handled negative-stock failure is real local sample
-behavior, not an invented model result. It does not itself call a model; answering
-questions with Copilot is a separate operation.
+Switching folders resets retained traces, task views and conversation history;
+no old-folder records are included in the new session. The selected folder is
+never deleted on shutdown. Captured code, output and paths can be sensitive;
+review exports before sharing them.
 
-For a no-account evidence-only demonstration, use
-`MODEL_WORKLOG_DEMO_PROVIDER=offline-demo npm run demo:web`. Copilot generation
-is then unavailable; local fallback answers and evidence remain usable. An
-OpenAI-compatible demo provider uses the server-only settings in the root README
-and requires enabling **Model answers** for the log question.
+`MODEL_WORKLOG_DEMO_PROVIDER=copilot` retains the read-only Copilot workflow.
+`offline-demo` exposes **Load offline example**, a scripted 122-tool-call
+inventory workload for repeatable checks. That example is not a live agent run.
+An OpenAI-compatible provider answers chat but does not execute workspace tasks.
 
-The demo projects captured Copilot messages, file activity, readable summaries,
+The demo projects captured Codex/Copilot messages, file activity, readable summaries,
 usage, and tool lifecycles into source-linked spans. Readable streaming assembly
 is reused so deltas are not mistaken for separate replies. Only `kind: tool`
 spans contribute to tool-call totals. Raw legacy sessions elsewhere are not
@@ -66,7 +63,7 @@ silently imported, and missing historical content cannot be reconstructed.
 
 The dashboard keeps credentials server-side, rejects cross-origin requests,
 allows one capture at a time, and caches the newest 20 completed/current run
-views. Its isolated temporary collector and workspace are removed on shutdown.
+views. Its temporary collector and sample copy are removed on shutdown; selected projects remain.
 Its local HTTP proxy is for demos, not a remotely exposed deployment.
 
 The browser keeps at most 20 conversation turns in memory and sends at most
@@ -157,8 +154,7 @@ MODEL_WORKLOG_RAG_PROVIDER=copilot npm run supervisor
 
 `MODEL_WORKLOG_RAG_MODEL` optionally selects an available Copilot model. This
 does not turn on content capture or replace the existing local authentication.
-Requests still need `synthesis: model`. The browser demo configures Copilot
-answers as part of its explicit Copilot-provider workflow.
+Requests still need `synthesis: model`. The browser demo configures the selected answer provider separately from workspace execution.
 
 For an OpenAI-compatible provider, configure the standalone supervisor with
 both `MODEL_WORKLOG_RAG_URL` and `MODEL_WORKLOG_RAG_MODEL`; provide an optional
@@ -246,3 +242,14 @@ independent proof of execution; uninstrumented work and raw legacy sessions are
 outside this corpus. Existing retention, redaction, and partial capture can limit
 answers. No universal capture, sustained-load benchmark, Windows ACL parity,
 remote multi-tenancy, or compliance guarantee is implied.
+
+### Codex demo answers
+
+The browser's Codex answer process uses the selected model in an empty temporary
+folder with ephemeral history, ignored user config/rules, shell and unified-exec
+tools disabled, and apps, browser, computer, hooks and multi-agent features off.
+Web search is disabled. It receives only the bounded question, conversation and
+redacted retrieved evidence. Its JSON answer and citations are validated before
+display; failures fall back to local evidence. This requires a recent Codex CLI
+with `--ignore-user-config` support. Workspace tasks run separately with the
+normal Codex workspace sandbox.

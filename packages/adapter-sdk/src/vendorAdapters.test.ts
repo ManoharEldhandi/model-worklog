@@ -74,7 +74,7 @@ test('Codex App Server adapter maps commands, files, summaries, usage, and sessi
 		{ method: 'command.started', payload: { executable: 'npm test' }, correlationId: 'item-command' },
 		{ method: 'command.completed', payload: { executable: 'npm test', exitCode: 0, durationMs: 100 }, correlationId: 'item-command' },
 		{ method: 'file.changed', payload: { path: 'src/app.ts', operation: 'modified' }, correlationId: 'item-file' },
-		{ method: 'agent.summary', payload: { summary: 'Fixed the test.', final: true }, correlationId: 'item-message' },
+		{ method: 'agent.message', payload: { role: 'assistant', text: 'Fixed the test.', final: true }, correlationId: 'item-message' },
 		{ method: 'usage:openai', payload: { model: 'gpt-5', usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } } },
 		{ method: 'adapter.lifecycle', payload: { adapter: 'codex-app-server', phase: 'thread-closed', threadId: 'thr-1' } },
 		{ method: 'complete', payload: 'completed' },
@@ -88,6 +88,14 @@ test('Codex App Server adapter marks unmapped notifications as unsupported', asy
 
 	assert.deepEqual(result, { emitted: 1, completed: false });
 	assert.deepEqual(sink.calls, [{ method: 'unknown:adapter.lifecycle:unsupported-capability', payload: { adapter: 'codex-app-server', method: 'future/event', message: 'The notification is not mapped by this adapter version.' } }]);
+});
+
+test('Codex retains final command output and assistant replies with their actual identity', async () => {
+	const sink = new RecordingSink(); const adapter = new CodexAppServerAdapter(sink);
+	await adapter.ingestNotification({ method: 'item/completed', params: { item: { id: 'command', type: 'commandExecution', command: 'npm test', exitCode: 1, aggregatedOutput: 'negative quantity test failed; token=private-example' } } });
+	await adapter.ingestNotification({ method: 'item/completed', params: { item: { id: 'reply', type: 'agentMessage', phase: 'final_answer', text: 'One pricing test failed.' } } });
+	assert.deepEqual(sink.calls.find((call) => call.method === 'process.output')?.payload, { stream: 'stdout', text: 'negative quantity test failed; token=[REDACTED]', source: 'codex-command', final: true });
+	assert.deepEqual(sink.calls.find((call) => call.method === 'agent.message')?.payload, { role: 'assistant', text: 'One pricing test failed.', final: true, phase: 'final_answer' });
 });
 
 test('Codex provider errors remain visible and redacted instead of becoming unknown protocol notices', async () => {
@@ -107,7 +115,7 @@ test('Codex App Server adapter retains visible summaries and command output but 
 	await adapter.ingestNotification({ method: 'item/commandExecution/outputDelta', params: { itemId: 'cmd-1', stream: 'stderr', delta: 'test failure details' } });
 	await adapter.ingestNotification({ method: 'item/completed', params: { item: { id: 'image-1', type: 'imageView', path: '/workspace/design.png' } } });
 	assert.deepEqual(sink.calls, [
-		{ method: 'agent.message', payload: { text: 'I will inspect the failing test.', source: 'assistant-commentary', delta: true }, correlationId: 'msg-1' },
+		{ method: 'agent.message', payload: { role: 'assistant', text: 'I will inspect the failing test.', source: 'assistant-commentary', delta: true }, correlationId: 'msg-1' },
 		{ method: 'agent.summary', payload: { summary: 'Checking the assertion and call path.', source: 'reasoning-summary', delta: true }, correlationId: 'reasoning-1' },
 		{ method: 'unknown:agent.summary:redacted', payload: { adapter: 'codex-app-server', method: 'item/reasoning/textDelta', message: 'Raw model reasoning is not retained; visible reasoning summaries remain available when Codex provides them.' } },
 		{ method: 'process.output', payload: { stream: 'stderr', text: 'test failure details', source: 'codex-command', delta: true }, correlationId: 'cmd-1' },

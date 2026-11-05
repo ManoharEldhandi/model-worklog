@@ -25,19 +25,26 @@
 				<div class="section-heading">
 					<div>
 						<p class="eyebrow">Workspace</p>
-						<h2 id="chat-title">Workspace review</h2>
+						<h2 id="chat-title">Workspace chat</h2>
 					</div>
 					<span class="mode" id="provider-mode">Checking provider</span>
 				</div>
 				<p class="workspace-context" id="workspace-context">Preparing the isolated sample workspace</p>
+				<form id="workspace-form" class="workspace-picker">
+					<label for="workspace-path">Project folder</label>
+					<div><input id="workspace-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Configured default, or enter a folder path"><button id="workspace-select" type="submit">Use folder</button></div>
+					<p id="workspace-status" role="status">The default folder is configured locally.</p>
+				</form>
 				<div class="messages" id="messages" aria-live="polite">
-					<p class="empty-state">No messages yet.</p>
+					<p class="empty-state">Ask the agent to inspect the sample project, run its tests, or fix a bug. Its activity will appear on the right.</p>
 				</div>
+				<div class="workspace-prompts" aria-label="Suggested workspace tasks"><button type="button" data-workspace-prompt="Read the inventory and pricing code, run npm test, and explain what fails.">Inspect code and run tests</button><button type="button" data-workspace-prompt="Fix the negative quantity bug and rerun the tests.">Fix the pricing bug</button></div>
 				<form class="composer" id="chat-form">
 					<label class="sr-only" for="message">Message</label>
-					<textarea id="message" name="message" maxlength="2000" placeholder="Review the inventory and pricing logic..." required></textarea>
+					<textarea id="message" name="message" maxlength="2000" placeholder="Ask about the sample code, run tests, or make a change..." required></textarea>
 					<button id="send-button" type="submit" title="Send request" aria-label="Send request">&#8593;</button>
 				</form>
+				<button id="ask-capture" class="ask-capture" type="button" hidden>Ask about this run’s logs &#8594;</button>
 			</section>
 
 			<aside class="observability" aria-label="Execution trace">
@@ -83,9 +90,7 @@
 						<div class="query-scope-row">
 							<label for="query-scope">Scope</label>
 							<select id="query-scope"><option value="all">All retained traces</option><option value="latest" disabled>Latest capture</option></select>
-							<label class="sr-only" for="sample-scenario">Sample scenario</label>
-							<select id="sample-scenario"><option value="inventory">Inventory review</option><option value="refund">Refund investigation</option></select>
-							<button id="sample-button" type="button">Record sample</button>
+							<button id="sample-button" type="button" hidden>Load offline example</button>
 							<button id="query-new" type="button" title="Clear the log conversation">New chat</button>
 						</div>
 						<details class="query-filters"><summary>Filters</summary><div class="query-filter-grid">
@@ -96,7 +101,7 @@
 						</div></details>
 						<label class="query-model-control" id="query-model-control" hidden><input id="query-model" type="checkbox" title="Send this question, recent conversation, and bounded redacted evidence to the configured provider"><span id="query-model-label">Model answers</span></label>
 						<div class="query-result-heading"><p id="query-status" role="status">No conversation yet</p><button id="query-export" type="button" title="Download the conversation and cited evidence as JSON" disabled>Export chat</button></div>
-						<div class="query-suggestions" aria-label="Suggested log questions"><button type="button" data-log-question="What failed?">What failed?</button><button type="button" data-log-question="What did it answer?">What did it answer?</button></div>
+						<div class="query-suggestions" aria-label="Suggested log questions"><button type="button" data-log-question="Which commands failed and why?">What failed?</button><button type="button" data-log-question="What files did the agent change?">What changed?</button></div>
 						<div id="query-result" class="query-result" role="log" aria-label="Log conversation" aria-live="polite" aria-relevant="additions text" tabindex="0"><p class="empty-state">No messages yet.</p></div>
 						<p id="query-error" class="query-error" role="alert" hidden></p>
 						<form id="query-form" class="query-form">
