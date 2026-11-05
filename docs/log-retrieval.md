@@ -267,3 +267,7 @@ legacy usage format. Repeated cumulative updates do not double-count tokens.
 Missing usage remains unknown. Whitespace fragments join their completed message;
 adapter diagnostics stay separate. Long message fields start collapsed and can
 be expanded. Old captures with missing token reports cannot be reconstructed.
+
+Browser workspace tasks have a 250,000-token cumulative budget, including cached
+input. Standalone CLI logger defaults are unchanged. Reported usage is retained
+when a task fails or is interrupted, and budget stops identify the actual limit.

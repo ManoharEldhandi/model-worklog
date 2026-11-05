@@ -286,12 +286,30 @@ function workspaceTask(message, history, provider) {
 	].join('\n\n');
 }
 
-async function requestWorkspaceAgent(run, context, recordTraceEvent, parent) {
+function recordSpanUsage(modelSpan, usage) {
+	if (usage?.source !== undefined) {
+		const model = text(usage.models?.[0] ?? usage.model);
+		const provider = text(usage.providers?.[0] ?? usage.provider);
+		modelSpan.setUsage({
+			source: usage.source,
+			...(provider === undefined ? {} : { provider }),
+			...(model === undefined ? {} : { model }),
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			cacheReadTokens: usage.cacheReadTokens,
+			cacheWriteTokens: usage.cacheWriteTokens,
+			reasoningTokens: usage.reasoningTokens,
+			totalTokens: usage.totalTokens,
+		});
+	}
+}
+
+async function requestWorkspaceAgent(run, context, recordTraceEvent, parent, onUsage) {
 	const tool = context.provider.kind;
 	recordTraceEvent(`${tool}.workspace.started`, { workspace: 'isolated-copy' });
 	const started = await supervisorRequest(context.collector, context.collectorToken, `/v1/${tool}-sessions`, 'POST', {
 		maxDurationMs: COPILOT_MAX_DURATION_MS,
-		...(tool === 'copilot' ? { captureReasoning: true } : { effort: 'low' }),
+		...(tool === 'copilot' ? { captureReasoning: true } : { effort: 'low', maxTokens: 250_000 }),
 		task: workspaceTask(run.message, context.history, tool),
 		workspacePath: context.workspacePath,
 		...(context.provider.model === undefined ? {} : { model: context.provider.model }),
@@ -325,16 +343,22 @@ async function requestWorkspaceAgent(run, context, recordTraceEvent, parent) {
 	const completed = await supervisorRequest(context.collector, context.collectorToken, `/v1/sessions/${encodeURIComponent(sessionId)}`, 'GET');
 	const session = value(completed, 'session');
 	const state = text(value(session, 'state'));
+	const usage = usageFromSession(session);
+	run.usage = usage; onUsage?.(usage);
 	const projected = [...projectToolSpans(run.copilotEvents, { projectId: PROJECT_ID, parent, agent: tool }), ...projectActivitySpans(run.log, { projectId: PROJECT_ID, parent, agent: tool })];
 	for (let offset = 0; offset < projected.length; offset += 100) {
 		await supervisorRequest(context.collector, context.writerToken, '/v2/traces/batch', 'POST', { schemaVersion: 1, spans: projected.slice(offset, offset + 100) });
 	}
 	if (state !== 'completed') {
-		throw new Error(`${tool} session ended with state ${state ?? 'unknown'}. ${run.copilotEvents.filter((event) => event.payload.userFacing === true).map((event) => event.payload.message).join(' ').slice(0, 1000)} Check ${tool} login and the selected model.`);
+		const budget = run.copilotEvents.find((event) => event.payload.phase === 'usage-budget-exceeded');
+		const interruption = run.copilotEvents.find((event) => event.payload.phase === 'interrupt-requested');
+		const reason = budget ? `Token budget reached (${budget.payload.reportedTokens}/${budget.payload.maxTokens} cumulative tokens, including cached input).`
+			: interruption?.payload.reason === 'duration-limit' ? 'The task reached its duration limit.'
+			: run.copilotEvents.filter((event) => event.payload.userFacing === true).map((event) => event.payload.message).join(' ').slice(0, 1000);
+		throw new Error(`${tool} session ended with state ${state ?? 'unknown'}. ${reason || `Check ${tool} login and the selected model.`}`);
 	}
 	const finalMessage = [...run.copilotEvents].reverse().find((event) => event.kind === 'agent.message' && event.payload.role === 'assistant' && event.payload.delta !== true && event.payload.agentId === undefined);
 	const content = typeof finalMessage?.payload.text === 'string' ? finalMessage.payload.text : '';
-	const usage = usageFromSession(session);
 	const model = usage?.models.length === 1 ? text(usage.models[0]) : context.provider.model;
 	return {
 		content: content === '' ? `${tool} completed without returning a visible assistant message.` : content,
@@ -386,25 +410,11 @@ async function executeRun(run, context) {
 				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, response: reply.content }),
 			}, async (modelSpan) => {
 				const reply = ['codex', 'copilot'].includes(context.provider.kind)
-					? await requestWorkspaceAgent(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context)
+					? await requestWorkspaceAgent(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context, (usage) => recordSpanUsage(modelSpan, usage))
 					: await requestModel(run.message, context.provider);
 				modelSpan.setAttributes({ ...(reply.model === undefined ? {} : { 'model.name': reply.model }), 'provider.name': reply.provider, 'response.mode': reply.mode });
 				modelSpan.addEvent('response.received', { mode: reply.mode, responseLength: reply.content.length });
-				if (reply.usage?.source !== undefined) {
-					const model = text(reply.usage.models?.[0] ?? reply.usage.model);
-					const provider = text(reply.usage.providers?.[0] ?? reply.usage.provider);
-					modelSpan.setUsage({
-						source: reply.usage.source,
-						...(provider === undefined ? {} : { provider }),
-						...(model === undefined ? {} : { model }),
-						inputTokens: reply.usage.inputTokens,
-						outputTokens: reply.usage.outputTokens,
-						cacheReadTokens: reply.usage.cacheReadTokens,
-						cacheWriteTokens: reply.usage.cacheWriteTokens,
-						reasoningTokens: reply.usage.reasoningTokens,
-						totalTokens: reply.usage.totalTokens,
-					});
-				}
+				if (!['codex', 'copilot'].includes(context.provider.kind)) { recordSpanUsage(modelSpan, reply.usage); }
 				return reply;
 			});
 			run.response = result.content;

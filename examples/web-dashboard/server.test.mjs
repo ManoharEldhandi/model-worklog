@@ -6,6 +6,24 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+test('interrupted agent work retains reported usage and explains the budget that stopped it', async (context) => {
+	const dashboard = await startWebDashboard({ provider: 'codex', codexRelayFactory: (sink, options, onFinished) => ({
+		async start() {
+			assert.equal(options.maxTokens, 250000);
+			await sink.recordUsage({ source: 'provider-reported', provider: 'openai', model: 'gpt-5.6-terra', inputTokens: 100, outputTokens: 30, totalTokens: 130 }, 'observed-native');
+			await sink.append({ kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'computed', payload: { phase: 'usage-budget-exceeded', maxTokens: 100, reportedTokens: 130 } });
+			await sink.complete('interrupted'); onFinished(options.sessionId);
+		}, async cancel() {}, async shutdown() {},
+	}) });
+	context.after(() => dashboard.close());
+	const { runId } = await fetch(new URL('/api/chat', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Inspect the code.' }) }).then((r) => r.json());
+	const run = await waitForRun(dashboard.url, runId);
+	assert.equal(run.status, 'failed'); assert.equal(run.usage.totalTokens, 130);
+	assert.match(run.error, /Token budget reached/); assert.doesNotMatch(run.error, /login/);
+	const traceUsage = run.trace.activity.find((entry) => entry.category === 'usage');
+	assert.ok(traceUsage); assert.match(JSON.stringify(traceUsage), /130/);
+});
+
 test('folder selection hides default paths, resets old logs, and never deletes the selected project', async () => {
 	const folder = await mkdtemp(join(tmpdir(), 'logger-workspace-selection-'));
 	const sentinel = join(folder, 'keep.txt'); await writeFile(sentinel, 'keep this project');
