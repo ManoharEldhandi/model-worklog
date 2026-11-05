@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import { startWebDashboard } from './server.mjs';
 
@@ -28,7 +30,7 @@ async function openLogs(page, dashboard) {
 	await page.getByRole('radio', { name: 'Ask logs', exact: true }).check();
 }
 async function record(page) {
-	await page.getByRole('button', { name: 'Record sample' }).click();
+	await page.getByRole('button', { name: 'Load offline example' }).click();
 	await expect(page.locator('#query-status')).toHaveText('Evidence-only answer');
 	await expect(page.locator('#run-state')).toHaveText('completed');
 }
@@ -38,6 +40,25 @@ async function ask(page, question) {
 	await expect(page.locator('#query-stop')).toBeHidden();
 	return page.locator('.log-turn').last();
 }
+
+test('selecting a project folder clears the previous log conversation and keeps the entered path off the page', async ({ page, dashboard }) => {
+	const folder = await mkdtemp(join(tmpdir(), 'logger-browser-project-'));
+	await writeFile(join(folder, 'README.md'), 'A separate example project.');
+	try {
+		await openLogs(page, dashboard); await record(page);
+		await page.getByLabel('Project folder').fill(folder);
+		await page.getByRole('button', { name: 'Use folder', exact: true }).click();
+		await expect(page.locator('#workspace-status')).toContainText('fresh log session');
+		await expect(page.getByLabel('Project folder')).toHaveValue('');
+		await expect(page.locator('#run-state')).toHaveText('Idle');
+		await expect(page.locator('.log-turn')).toHaveCount(0);
+		await expect(page.locator('#sample-button')).toBeHidden();
+		await expect(page.locator('#workspace-context')).not.toContainText(folder);
+		const turn = await ask(page, 'What happened?');
+		await expect(turn.locator('.query-answer')).toContainText('No retained spans');
+		await expect(page.locator('#messages')).not.toContainText('negative stock');
+	} finally { await rm(folder, { recursive: true, force: true }); }
+});
 
 test('capture → SQL counts → cited model reply → source snapshot → redacted export', async ({ page, dashboard }) => {
 	const errors = []; page.on('pageerror', (error) => errors.push(error.message));

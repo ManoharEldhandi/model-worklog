@@ -211,3 +211,13 @@ pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
 	.shell { height: auto; min-height: 100dvh; }
 	.workspace { min-height: 720px; }
 }
+
+.workspace-prompts { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0 1rem .75rem; }
+.workspace-prompts button, .ask-capture { border: 1px solid var(--border, #d4d4d4); border-radius: 6px; padding: .5rem .65rem; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: .8rem; }
+.ask-capture { margin: 0 1rem 1rem; text-align: left; }
+
+.workspace-picker { padding: 0 1rem .75rem; font-size: .8rem; }
+.workspace-picker > div { display: flex; gap: .5rem; margin-top: .35rem; }
+.workspace-picker input { flex: 1; min-width: 0; padding: .55rem; border: 1px solid var(--border, #d4d4d4); border-radius: 6px; background: transparent; color: inherit; }
+.workspace-picker button { border: 1px solid var(--border, #d4d4d4); border-radius: 6px; background: transparent; color: inherit; padding: .5rem .7rem; cursor: pointer; }
+.workspace-picker p { opacity: .7; margin: .45rem 0 0; }

@@ -67,6 +67,10 @@ function addMessage(role, text) {
 
 function setRunning(running) {
 	sendButton.disabled = running;
+	document.querySelector('#workspace-select').disabled = running;
+	document.querySelector('#workspace-path').disabled = running;
+	document.querySelectorAll('[data-workspace-prompt]').forEach((button) => { button.disabled = running; });
+	document.querySelector('#ask-capture').hidden = running || !currentRun?.traceId;
 	sampleButton.disabled = running;
 	input.disabled = running;
 	if (running) {
@@ -194,7 +198,6 @@ function renderTimeline() {
 function renderRun(run) {
 	currentRun = run;
 	queryScope.querySelector('[value="latest"]').disabled = run.traceId === undefined;
-	if (run.traceId !== undefined && queryScope.dataset.initialized !== 'true') { queryScope.value = 'latest'; queryScope.dataset.initialized = 'true'; }
 	logConversation.syncScope();
 	renderTimeline();
 	setDownload(run);
@@ -242,6 +245,7 @@ async function updateRun() {
 		activeRun = undefined;
 		setRunning(false);
 		if (run.status === 'completed') {
+			document.querySelector('#ask-capture').hidden = false;
 			addMessage('assistant', run.response);
 			if (pendingSampleQuery) {
 				pendingSampleQuery = false;
@@ -321,13 +325,13 @@ sampleButton.addEventListener('click', async () => {
 	queryError.hidden = true;
 	queryStatus.textContent = 'Recording sample capture...';
 	try {
-		const scenario = document.querySelector('#sample-scenario').value;
+		const scenario = 'inventory';
 		const response = await fetch('/api/logs/sample', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scenario }), signal: AbortSignal.timeout(15_000) });
 		const payload = await response.json();
 		if (!response.ok) { throw new Error(payload?.error?.message ?? 'Sample capture failed.'); }
 		activeRun = payload.runId;
 		pendingSampleQuery = true;
-		addMessage('user', scenario === 'refund' ? 'Record refund investigation sample' : 'Record inventory sample capture');
+		addMessage('user', 'Load offline inventory example');
 		queryScope.querySelector('[value="latest"]').disabled = false;
 		queryScope.value = 'latest';
 		void updateRun();
@@ -339,21 +343,46 @@ sampleButton.addEventListener('click', async () => {
 	}
 });
 
+function applyConfig(config) {
+	logConversation.configure(config);
+	sampleButton.hidden = config.mode !== 'offline-demo' || !config.workspace.isolatedCopy;
+	providerMode.textContent = config.mode === 'codex' ? `Codex / ${config.model}` : config.mode === 'copilot' ? 'GitHub Copilot' : config.mode === 'openai-compatible' ? 'Live provider' : 'Offline example';
+	connectionStatus.textContent = `${config.provider} / Local collector`;
+	workspaceContext.textContent = `${config.workspace.label} — ${config.workspace.isolatedCopy ? 'temporary sample copy' : 'selected project folder'}`;
+	document.querySelector('#workspace-status').textContent = config.workspace.isolatedCopy ? 'Changes stay in this demo session. Choose a task below.' : 'Agent tasks run in this folder. Switching folders starts a fresh log session.';
+	document.querySelector('.workspace-prompts').hidden = !config.workspace.isolatedCopy;
+	input.placeholder = config.workspace.isolatedCopy ? 'Inspect the sample code, run tests, or fix the pricing bug...' : 'Ask the agent to work on this project...';
+}
 async function loadConfig() {
 	try {
 		const response = await fetch('/api/config', { cache: 'no-store' });
-		if (!response.ok) {
-			throw new Error('Configuration unavailable');
-		}
-		const config = await response.json();
-		logConversation.configure(config);
-		if (config.semanticSearch) { const control = document.querySelector('input[name="log-view"][value="query"]'); control.checked = true; control.dispatchEvent(new Event('change')); }
-		providerMode.textContent = config.mode === 'copilot' ? 'GitHub Copilot' : config.mode === 'openai-compatible' ? 'Live provider' : 'Offline demo';
-		connectionStatus.textContent = `${config.provider} / Local collector`;
-		workspaceContext.textContent = `${config.workspace.label}: ${config.workspace.files.join(', ')}`;
-	} catch {
-		connectionStatus.textContent = 'Local collector unavailable';
-	}
+		if (!response.ok) { throw new Error('Configuration unavailable'); }
+		applyConfig(await response.json());
+	} catch { connectionStatus.textContent = 'Local collector unavailable'; }
 }
-
+document.querySelector('#workspace-form').addEventListener('submit', async (event) => {
+	event.preventDefault();
+	if (activeRun !== undefined) { return; }
+	const status = document.querySelector('#workspace-status');
+	setRunning(true); status.textContent = 'Opening folder...';
+	try {
+		const response = await fetch('/api/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: document.querySelector('#workspace-path').value.trim() }), signal: AbortSignal.timeout(15_000) });
+		const result = await response.json();
+		if (!response.ok) { throw new Error(result?.error?.message ?? 'Could not open this folder.'); }
+		currentRun = undefined; expanded.clear(); rows.clear();
+		queryScope.value = 'all'; queryScope.dataset.initialized = ''; queryScope.querySelector('[value="latest"]').disabled = true;
+		logConversation.clear('New workspace selected');
+		messages.replaceChildren(element('p', 'empty-state', 'Ask the agent to work on this project.'));
+		runState.textContent = 'Idle'; traceCount.textContent = '0 spans stored'; captureSummary.textContent = 'No run selected';
+		setDownload({ downloadReady: false }); renderTimeline();
+		document.querySelector('#workspace-path').value = '';
+		applyConfig(result);
+	} catch (error) { status.textContent = error.message; }
+	finally { setRunning(false); }
+});
+document.querySelectorAll('[data-workspace-prompt]').forEach((button) => button.addEventListener('click', () => { input.value = button.dataset.workspacePrompt; input.focus(); }));
+document.querySelector('#ask-capture').addEventListener('click', () => {
+	queryScope.value = 'latest'; logConversation.syncScope();
+	const control = document.querySelector('input[name="log-view"][value="query"]'); control.checked = true; control.dispatchEvent(new Event('change'));
+});
 void loadConfig();

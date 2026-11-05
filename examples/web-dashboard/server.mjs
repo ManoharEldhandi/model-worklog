@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { cp, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { cp, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { tmpdir, homedir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createLocalModelLogger, LocalSupervisorClient } from 'model-worklog-sdk';
 import { buildSessionLog, buildTraceLog, LogQueryRequestSchema, parseSessionEvent, redactAttributes, redactSensitiveText, SpanIdSchema, TraceDetailSchema, TraceIdSchema } from 'model-worklog-schema';
 import { CopilotLogAnswerGenerator, createTraceCredential, OpenAiLogAnswerGenerator, startSupervisor } from 'model-worklog-supervisor';
 
-import { captureRefundReview, captureSampleReview } from './sampleCapture.mjs';
+import { captureSampleReview } from './sampleCapture.mjs';
+import { CodexLogAnswerGenerator } from './codexLogAnswers.mjs';
 import { createSdkLogQuery } from './sdkLogQueries.mjs';
 import { ChromaLogVectorStore, HttpLogRagReranker, LogRag, OpenAiLogEmbedder } from 'model-worklog-sdk/rag';
 import { projectActivitySpans, projectToolSpans } from './toolProjection.mjs';
@@ -17,7 +18,7 @@ import { projectActivitySpans, projectToolSpans } from './toolProjection.mjs';
 const PROJECT_ID = 'web-demo';
 const MAX_MESSAGE_LENGTH = 2_000;
 const MAX_REQUEST_BYTES = 128 * 1024;
-const SAMPLE_WORKSPACE_FILES = ['README.md', 'src/inventory.ts', 'src/pricing.ts'];
+const SAMPLE_WORKSPACE_FILES = ['README.md', 'src/inventory.ts', 'src/pricing.ts', 'test/pricing.test.ts', 'test/inventory.test.ts', 'package.json'];
 const COPILOT_MAX_DURATION_MS = 120_000;
 const STATIC_FILES = new Map([
 	['/', { file: 'index.html', contentType: 'text/html; charset=utf-8' }],
@@ -274,29 +275,33 @@ function describeCopilotEvent(run, event, recordTraceEvent) {
 	});
 }
 
-function copilotTask(message) {
+function workspaceTask(message, history, provider) {
 	return [
-		'You are reviewing the current sample workspace in read-only mode.',
-		'Do not create, edit, rename, or delete files. Do not run commands that modify the workspace.',
+		'Work only in the selected workspace (the current directory).',
+		provider === 'copilot' ? 'Review in read-only mode. Do not modify files.' : 'Read, run tests, and edit files when the user requests it. Do not access other folders or services unless the task explicitly requires it.',
+		'Read the project instructions and use its test commands. Explain observed failures and changes without inventing results.',
+		`Recent workspace conversation (context only): ${JSON.stringify(history ?? [])}`,
 		'Read the files needed to answer the user request, then give a concise response with filenames.',
 		`User request: ${message}`,
 	].join('\n\n');
 }
 
-async function requestCopilotReview(run, context, recordTraceEvent, parent) {
-	recordTraceEvent('copilot.review.started', { workspace: 'isolated-copy' });
-	const started = await supervisorRequest(context.collector, context.collectorToken, '/v1/copilot-sessions', 'POST', {
+async function requestWorkspaceAgent(run, context, recordTraceEvent, parent) {
+	const tool = context.provider.kind;
+	recordTraceEvent(`${tool}.workspace.started`, { workspace: 'isolated-copy' });
+	const started = await supervisorRequest(context.collector, context.collectorToken, `/v1/${tool}-sessions`, 'POST', {
 		maxDurationMs: COPILOT_MAX_DURATION_MS,
-		captureReasoning: true,
-		task: copilotTask(run.message),
+		...(tool === 'copilot' ? { captureReasoning: true } : {}),
+		task: workspaceTask(run.message, context.history, tool),
 		workspacePath: context.workspacePath,
 		...(context.provider.model === undefined ? {} : { model: context.provider.model }),
 	});
 	const sessionId = text(value(value(started, 'session'), 'sessionId'));
 	if (sessionId === undefined) {
-		throw new Error('Supervisor did not return a Copilot session ID.');
+		throw new Error(`Supervisor did not return a ${tool} session ID.`);
 	}
-	run.copilotSessionId = sessionId;
+	run.agentSessionId = sessionId;
+	if (tool === 'copilot') { run.copilotSessionId = sessionId; }
 	const reader = new LocalSupervisorClient({ supervisorUrl: context.collector.url, token: context.collectorToken });
 	let afterSequence = 0;
 	let terminal = false;
@@ -320,22 +325,22 @@ async function requestCopilotReview(run, context, recordTraceEvent, parent) {
 	const completed = await supervisorRequest(context.collector, context.collectorToken, `/v1/sessions/${encodeURIComponent(sessionId)}`, 'GET');
 	const session = value(completed, 'session');
 	const state = text(value(session, 'state'));
-	const projected = [...projectToolSpans(run.copilotEvents, { projectId: PROJECT_ID, parent }), ...projectActivitySpans(run.log, { projectId: PROJECT_ID, parent })];
+	const projected = [...projectToolSpans(run.copilotEvents, { projectId: PROJECT_ID, parent, agent: tool }), ...projectActivitySpans(run.log, { projectId: PROJECT_ID, parent, agent: tool })];
 	for (let offset = 0; offset < projected.length; offset += 100) {
 		await supervisorRequest(context.collector, context.writerToken, '/v2/traces/batch', 'POST', { schemaVersion: 1, spans: projected.slice(offset, offset + 100) });
 	}
 	if (state !== 'completed') {
-		throw new Error(`Copilot session ended with state ${state ?? 'unknown'}. Run copilot login if authentication is required.`);
+		throw new Error(`${tool} session ended with state ${state ?? 'unknown'}. ${run.copilotEvents.filter((event) => event.payload.userFacing === true).map((event) => event.payload.message).join(' ').slice(0, 1000)} Check ${tool} login and the selected model.`);
 	}
 	const finalMessage = [...run.copilotEvents].reverse().find((event) => event.kind === 'agent.message' && event.payload.role === 'assistant' && event.payload.delta !== true && event.payload.agentId === undefined);
 	const content = typeof finalMessage?.payload.text === 'string' ? finalMessage.payload.text : '';
 	const usage = usageFromSession(session);
-	const model = usage?.models.length === 1 ? text(usage.models[0]) : undefined;
+	const model = usage?.models.length === 1 ? text(usage.models[0]) : context.provider.model;
 	return {
-		content: content === '' ? 'Copilot completed without returning a visible assistant message.' : content,
-		mode: 'copilot-cli',
+		content: content === '' ? `${tool} completed without returning a visible assistant message.` : content,
+		mode: `${tool}-cli`,
 		...(model === undefined ? {} : { model }),
-		provider: 'github-copilot',
+		provider: tool === 'codex' ? 'openai-codex' : 'github-copilot',
 		usage,
 	};
 }
@@ -371,7 +376,7 @@ async function executeRun(run, context) {
 			serializeResult: (result) => ({ responseLength: result.content.length }),
 		}, async (agentSpan) => {
 			run.traceId = agentSpan.context.traceId;
-			const providerLabel = context.provider.kind === 'copilot' ? 'GitHub Copilot CLI' : context.provider.kind === 'offline-demo' ? 'Built-in offline demo' : 'OpenAI-compatible endpoint';
+			const providerLabel = context.provider.kind === 'codex' ? 'Codex CLI' : context.provider.kind === 'copilot' ? 'GitHub Copilot CLI' : context.provider.kind === 'offline-demo' ? 'Built-in offline demo' : 'OpenAI-compatible endpoint';
 			addEvent(run, 'adapter.lifecycle', { adapter: providerLabel, phase: 'request-started' });
 			const result = await logger.trace({
 				attributes: { 'provider.mode': context.provider.kind },
@@ -380,8 +385,8 @@ async function executeRun(run, context) {
 				name: 'model.chat.completions',
 				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, response: reply.content }),
 			}, async (modelSpan) => {
-				const reply = context.provider.kind === 'copilot'
-					? await requestCopilotReview(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context)
+				const reply = ['codex', 'copilot'].includes(context.provider.kind)
+					? await requestWorkspaceAgent(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context)
 					: await requestModel(run.message, context.provider);
 				modelSpan.setAttributes({ ...(reply.model === undefined ? {} : { 'model.name': reply.model }), 'provider.name': reply.provider, 'response.mode': reply.mode });
 				modelSpan.addEvent('response.received', { mode: reply.mode, responseLength: reply.content.length });
@@ -404,7 +409,7 @@ async function executeRun(run, context) {
 			});
 			run.response = result.content;
 			run.usage = result.usage;
-			if (context.provider.kind !== 'copilot') {
+			if (!['codex', 'copilot'].includes(context.provider.kind)) {
 				addEvent(run, 'agent.message', { role: 'assistant', text: result.content });
 			}
 			agentSpan.addEvent('response.rendered', { responseLength: result.content.length });
@@ -446,6 +451,7 @@ function publicRun(run) {
 		activity: { schemaVersion: 1, entries: log.entries, sourceCount: log.sourceCount },
 		delivery: run.delivery,
 		copilotSessionId: run.copilotSessionId,
+		agentSessionId: run.agentSessionId,
 		downloadReady: run.status !== 'running',
 		error: run.error,
 		events: run.events,
@@ -460,13 +466,13 @@ function publicRun(run) {
 
 async function executeSampleRun(run, context) {
 	try {
-		const capture = run.scenario === 'refund' ? captureRefundReview : captureSampleReview;
+		const capture = captureSampleReview;
 		const result = await capture({ endpoint: context.collector.url, token: context.writerToken, projectId: PROJECT_ID, workspacePath: context.workspacePath, onEvent: (kind, payload, correlationId) => addEvent(run, kind, payload, correlationId) });
 		run.traceId = result.traceId;
 		run.delivery = result.delivery;
 		run.storedTrace = await loadTrace(context.collector, context.readerToken, result.traceId);
 		run.trace = summarizeTrace(run.storedTrace);
-		run.response = run.scenario === 'refund' ? 'Refund review captured. The payment was outside the refund window; the amount was not recorded.' : 'Sample capture complete: 120 file reads, one workspace search, and one handled stock validation failure.';
+		run.response = 'Offline example loaded: scripted SDK activity over the sample inventory files. Use workspace chat with Codex for real agent work.';
 		run.status = 'completed';
 		addEvent(run, 'session.completed', {});
 	} catch (error) {
@@ -503,54 +509,75 @@ function rememberRun(runs, run) {
 	runs.set(run.id, run);
 }
 
-function publicConfig(provider, modelSynthesis, semanticSearch) {
+function publicConfig(provider, modelSynthesis, semanticSearch, workspace) {
 	return {
 		collector: 'temporary local collector',
 		mode: provider.kind,
+		model: provider.model,
 		modelSynthesis,
 		semanticSearch,
-		provider: provider.kind === 'copilot' ? 'GitHub Copilot CLI' : provider.kind === 'offline-demo' ? 'Built-in demo responder' : 'OpenAI-compatible endpoint',
-		workspace: { files: SAMPLE_WORKSPACE_FILES, label: 'Harbor Inventory isolated workspace copy' },
+		provider: provider.kind === 'codex' ? 'Codex CLI' : provider.kind === 'copilot' ? 'GitHub Copilot CLI' : provider.kind === 'offline-demo' ? 'Built-in demo responder' : 'OpenAI-compatible endpoint',
+		workspace,
 	};
 }
 
 export async function startWebDashboard(options = {}) {
-	const providerKind = options.provider ?? process.env.MODEL_WORKLOG_DEMO_PROVIDER ?? 'copilot';
-	if (!['copilot', 'offline-demo', 'openai-compatible'].includes(providerKind)) {
-		throw new Error('MODEL_WORKLOG_DEMO_PROVIDER must be copilot, offline-demo, or openai-compatible.');
+	const providerKind = options.provider ?? process.env.MODEL_WORKLOG_DEMO_PROVIDER ?? 'codex';
+	if (!['codex', 'copilot', 'offline-demo', 'openai-compatible'].includes(providerKind)) {
+		throw new Error('MODEL_WORKLOG_DEMO_PROVIDER must be codex, copilot, offline-demo, or openai-compatible.');
 	}
 	const provider = {
 		apiKey: options.apiKey ?? process.env.MODEL_WORKLOG_DEMO_OPENAI_API_KEY,
 		endpoint: options.endpoint ?? process.env.MODEL_WORKLOG_DEMO_OPENAI_URL,
 		kind: providerKind,
-		model: options.model ?? (providerKind === 'openai-compatible' ? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini' : undefined),
+		model: options.model ?? process.env.MODEL_WORKLOG_DEMO_MODEL ?? (providerKind === 'codex' ? 'gpt-5.6-terra' : providerKind === 'openai-compatible' ? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini' : undefined),
 	};
-	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'copilot'
+	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'codex' ? new CodexLogAnswerGenerator({ model: provider.model }) : provider.kind === 'copilot'
 		? new CopilotLogAnswerGenerator({ model: provider.model })
 		: provider.kind === 'openai-compatible' && provider.endpoint !== undefined ? new OpenAiLogAnswerGenerator({ endpoint: provider.endpoint, model: provider.model, apiKey: provider.apiKey }) : undefined);
 	const sampleWorkspacePath = await realpath(fileURLToPath(new URL('./sample-workspace', import.meta.url)));
-	const workspacePath = await mkdtemp(join(tmpdir(), 'model-worklog-dashboard-workspace-'));
-	await cp(sampleWorkspacePath, workspacePath, { recursive: true });
-	const dataDirectory = await mkdtemp(join(tmpdir(), 'model-worklog-web-demo-'));
-	const collector = await startSupervisor({
-		dataDirectory,
-		port: 0,
-		tracePrivacy: { mode: 'redacted-content' },
-		copilotRelayFactory: options.copilotRelayFactory,
-		logAnswerGenerator,
-	});
-	const [writer, reader] = await Promise.all([
-		createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'writer', url: collector.url }),
-		createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'reader', url: collector.url }),
-	]);
-	const ragOptions = options.ragOptions ?? (process.env.MODEL_WORKLOG_CHROMA_URL && process.env.MODEL_WORKLOG_EMBEDDING_URL ? {
-		store: new ChromaLogVectorStore({ url: process.env.MODEL_WORKLOG_CHROMA_URL, collection: `web-demo-${randomUUID()}` }),
-		embedder: new OpenAiLogEmbedder({ endpoint: process.env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
-		...(process.env.MODEL_WORKLOG_RERANK_URL ? { reranker: new HttpLogRagReranker(process.env.MODEL_WORKLOG_RERANK_URL) } : {}),
-	} : undefined);
-	const rag = options.rag ?? (ragOptions ? new LogRag(ragOptions) : undefined);
-	const queryLogs = rag ? createSdkLogQuery({ client: new LocalSupervisorClient({ supervisorUrl: collector.url, token: reader.token }), rag, generator: logAnswerGenerator }) : undefined;
-	await supervisorRequest(collector, collector.authToken, '/v1/workspaces/trust', 'POST', { workspacePath });
+	async function openWorkspace(selectedPath) {
+		let selected;
+		try {
+			const expanded = selectedPath?.startsWith('~/') ? join(homedir(), selectedPath.slice(2)) : selectedPath;
+			selected = await realpath(expanded ? resolve(expanded) : sampleWorkspacePath);
+			if (!(await stat(selected)).isDirectory()) { throw new Error('not a directory'); }
+		} catch { throw new DashboardHttpError(400, 'Choose an existing folder on this computer.'); }
+		const isolatedCopy = selected === sampleWorkspacePath;
+		const workspacePath = isolatedCopy ? await mkdtemp(join(tmpdir(), 'model-worklog-dashboard-workspace-')) : selected;
+		const dataDirectory = await mkdtemp(join(tmpdir(), 'model-worklog-web-demo-'));
+		let collector;
+		const dispose = async () => {
+			await collector?.close();
+			if (isolatedCopy) { await rm(workspacePath, { force: true, recursive: true }); }
+			await rm(dataDirectory, { force: true, recursive: true });
+		};
+		try {
+			if (isolatedCopy) { await cp(sampleWorkspacePath, workspacePath, { recursive: true }); }
+			collector = await startSupervisor({ dataDirectory, port: 0, tracePrivacy: { mode: 'redacted-content' },
+				copilotRelayFactory: options.copilotRelayFactory, codexRelayFactory: options.codexRelayFactory, logAnswerGenerator });
+			const [writer, reader] = await Promise.all([
+				createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'writer', url: collector.url }),
+				createTraceCredential({ adminToken: collector.authToken, projects: [PROJECT_ID], role: 'reader', url: collector.url }),
+			]);
+			const ragOptions = options.createRagOptions?.() ?? options.ragOptions ?? (process.env.MODEL_WORKLOG_CHROMA_URL && process.env.MODEL_WORKLOG_EMBEDDING_URL ? {
+				store: new ChromaLogVectorStore({ url: process.env.MODEL_WORKLOG_CHROMA_URL, collection: `web-demo-${randomUUID()}` }),
+				embedder: new OpenAiLogEmbedder({ endpoint: process.env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
+				...(process.env.MODEL_WORKLOG_RERANK_URL ? { reranker: new HttpLogRagReranker(process.env.MODEL_WORKLOG_RERANK_URL) } : {}),
+			} : undefined);
+			const rag = options.rag ?? (ragOptions ? new LogRag(ragOptions) : undefined);
+			const queryLogs = rag ? createSdkLogQuery({ client: new LocalSupervisorClient({ supervisorUrl: collector.url, token: reader.token }), rag, generator: logAnswerGenerator }) : undefined;
+			await supervisorRequest(collector, collector.authToken, '/v1/workspaces/trust', 'POST', { workspacePath });
+			return { workspacePath, collector, writer, reader, rag, queryLogs, dispose,
+				publicWorkspace: { id: randomUUID(), label: isolatedCopy ? 'Harbor Inventory' : basename(selected), isolatedCopy, files: isolatedCopy ? SAMPLE_WORKSPACE_FILES : [] } };
+		} catch (error) { await dispose(); throw error; }
+	}
+	const defaultWorkspace = options.workspacePath ?? process.env.MODEL_WORKLOG_DEMO_WORKSPACE;
+	let workspace = await openWorkspace(defaultWorkspace);
+	let { workspacePath, collector, writer, reader, rag, queryLogs } = workspace;
+	let switching = false;
+	let workspaceSwitch;
+	const config = () => publicConfig(provider, logAnswerGenerator !== undefined, rag !== undefined, workspace.publicWorkspace);
 	const runs = new Map();
 	const activeQueries = new Set();
 	let activeSample;
@@ -560,9 +587,29 @@ export async function startWebDashboard(options = {}) {
 			guardRequest(request);
 			if ((request.url?.length ?? 0) > 4096) { throw new DashboardHttpError(400, 'Request URL is too long.'); }
 			const url = new URL(request.url ?? '/', 'http://localhost');
+			if (switching) { throw new DashboardHttpError(409, 'The workspace is changing. Retry shortly.'); }
+			if (request.method === 'POST' && url.pathname === '/api/workspace') {
+				const body = await readRequestBody(request);
+				if (switching) { throw new DashboardHttpError(409, 'The workspace is changing. Retry shortly.'); }
+				if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'path') || typeof body.path !== 'string' || body.path.length > 4096 || /[\0\r\n]/.test(body.path)) { throw new DashboardHttpError(400, 'Enter a valid folder path.'); }
+				if (activeQueries.size || [...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'Wait for the active task or log answer before changing folders.'); }
+				switching = true;
+				try {
+					workspaceSwitch = openWorkspace(body.path.trim() || defaultWorkspace);
+					const next = await workspaceSwitch;
+					const previous = workspace;
+					workspace = next;
+					({ workspacePath, collector, writer, reader, rag, queryLogs } = next);
+					runs.clear();
+					await previous.dispose();
+					sendJson(response, 200, config());
+				} finally { switching = false; workspaceSwitch = undefined; }
+				return;
+			}
 			if (request.method === 'POST' && url.pathname === '/api/logs/query') {
 				if (url.search !== '') { throw new DashboardHttpError(400, 'Query parameters are not supported.'); }
 				const body = await readRequestBody(request);
+				if (switching) { throw new DashboardHttpError(409, 'The workspace is changing. Retry shortly.'); }
 				if (body === null || typeof body !== 'object' || Array.isArray(body) || (body.projectId !== undefined && body.projectId !== PROJECT_ID)) { throw new DashboardHttpError(400, 'Only the demo project can be queried.'); }
 				const parsed = LogQueryRequestSchema.safeParse({ ...body, projectId: PROJECT_ID });
 				if (!parsed.success) { throw new DashboardHttpError(400, 'Enter a question of 1-2000 characters and valid scope filters.'); }
@@ -592,17 +639,19 @@ export async function startWebDashboard(options = {}) {
 				return;
 			}
 			if (request.method === 'POST' && url.pathname === '/api/logs/sample') {
+				if (!workspace.publicWorkspace.isolatedCopy) { throw new DashboardHttpError(400, 'The offline example is available only in the sample workspace.'); }
 				const body = await readRequestBody(request);
-				if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'scenario') || (body.scenario !== undefined && !['inventory', 'refund'].includes(body.scenario))) { throw new DashboardHttpError(400, 'Choose the inventory or refund sample.'); }
+				if (switching) { throw new DashboardHttpError(409, 'The workspace is changing. Retry shortly.'); }
+				if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'scenario') || (body.scenario !== undefined && body.scenario !== 'inventory')) { throw new DashboardHttpError(400, 'Only the offline inventory example is available.'); }
 				if ([...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'A capture is already running.'); }
-				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), scenario: body.scenario ?? 'inventory', message: body.scenario === 'refund' ? 'Refund investigation sample' : 'Inventory sample capture', status: 'running' };
+				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message: 'Offline inventory example', status: 'running' };
 				rememberRun(runs, run);
 				activeSample = executeSampleRun(run, { collector, writerToken: writer.token, readerToken: reader.token, workspacePath }).finally(() => { activeSample = undefined; });
 				sendJson(response, 202, { runId: run.id });
 				return;
 			}
 			if (request.method === 'GET' && url.pathname === '/api/config') {
-				sendJson(response, 200, publicConfig(provider, logAnswerGenerator !== undefined, rag !== undefined));
+				sendJson(response, 200, config());
 				return;
 			}
 			if (request.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/download')) {
@@ -630,6 +679,7 @@ export async function startWebDashboard(options = {}) {
 			}
 			if (request.method === 'POST' && url.pathname === '/api/chat') {
 				const body = await readRequestBody(request);
+				if (switching) { throw new DashboardHttpError(409, 'The workspace is changing. Retry shortly.'); }
 				if ([...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'A capture is already running.'); }
 				const message = typeof body?.message === 'string' ? body.message.trim() : '';
 				if (message === '' || message.length > MAX_MESSAGE_LENGTH) {
@@ -639,7 +689,7 @@ export async function startWebDashboard(options = {}) {
 				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message, status: 'running' };
 				addEvent(run, 'agent.message', { role: 'user', text: message });
 				rememberRun(runs, run);
-				void executeRun(run, { collector, collectorToken: collector.authToken, provider, readerToken: reader.token, workspacePath, writerToken: writer.token }).catch((error) => {
+				void executeRun(run, { history: [...runs.values()].filter((previous) => previous.id !== run.id && previous.status === 'completed' && previous.agentSessionId).slice(-4).flatMap((previous) => [{ role: 'user', content: previous.message.slice(0, 2000) }, { role: 'assistant', content: (previous.response ?? '').slice(0, 2000) }]), collector, collectorToken: collector.authToken, provider, readerToken: reader.token, workspacePath, writerToken: writer.token }).catch((error) => {
 					run.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
 					run.status = 'failed';
 					addEvent(run, 'session.failed', { state: 'failed', message: run.error });
@@ -696,9 +746,8 @@ export async function startWebDashboard(options = {}) {
 			server.closeAllConnections();
 			await stopped;
 			await activeSample;
-			await collector.close();
-			await rm(workspacePath, { force: true, recursive: true });
-			await rm(dataDirectory, { force: true, recursive: true });
+			await workspaceSwitch?.catch(() => undefined);
+			await workspace.dispose();
 		},
 		url: `http://127.0.0.1:${port}`,
 	};

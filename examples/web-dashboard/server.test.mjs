@@ -2,6 +2,67 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { startWebDashboard } from './server.mjs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+test('folder selection hides default paths, resets old logs, and never deletes the selected project', async () => {
+	const folder = await mkdtemp(join(tmpdir(), 'logger-workspace-selection-'));
+	const sentinel = join(folder, 'keep.txt'); await writeFile(sentinel, 'keep this project');
+	const dashboard = await startWebDashboard({ provider: 'offline-demo' });
+	try {
+		const post = (path, body) => fetch(new URL(path, dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+		const { runId } = await (await post('/api/chat', { message: 'old workspace task' })).json();
+		await waitForRun(dashboard.url, runId);
+		const invalid = await post('/api/workspace', { path: join(folder, 'missing-private-folder') });
+		assert.equal(invalid.status, 400); assert.doesNotMatch(await invalid.text(), /missing-private-folder/);
+		const selected = await post('/api/workspace', { path: folder }); assert.equal(selected.status, 200);
+		const config = await selected.json();
+		assert.equal(config.workspace.isolatedCopy, false); assert.equal(JSON.stringify(config).includes(folder), false);
+		assert.equal((await fetch(new URL(`/api/runs/${runId}`, dashboard.url))).status, 404);
+		const logs = await (await post('/api/logs/query', { question: 'What happened?' })).json(); assert.equal(logs.totals.spans, 0);
+		assert.equal((await post('/api/logs/sample', {})).status, 400);
+		const reset = await (await post('/api/workspace', { path: '' })).json(); assert.equal(reset.workspace.isolatedCopy, true);
+	} finally { await dashboard.close(); assert.equal(await readFile(sentinel, 'utf8'), 'keep this project'); await rm(folder, { recursive: true, force: true }); }
+});
+
+test('the configured default folder stays server-side and is used for workspace tasks', async (context) => {
+	const folder = await mkdtemp(join(tmpdir(), 'logger-private-default-'));
+	const dashboard = await startWebDashboard({ provider: 'offline-demo', workspacePath: folder });
+	context.after(async () => { await dashboard.close(); await rm(folder, { force: true, recursive: true }); });
+	const config = await fetch(new URL('/api/config', dashboard.url)).then((r) => r.text());
+	assert.equal(config.includes(folder), false);
+	const page = await fetch(dashboard.url).then((r) => r.text()); assert.equal(page.includes(folder), false);
+});
+
+test('Codex chat works in the sample copy, captures commands, and carries prior workspace conversation', async (context) => {
+	const tasks = []; const directories = [];
+	const dashboard = await startWebDashboard({ provider: 'codex', codexRelayFactory: (sink, options, onFinished) => ({
+		async start() {
+			tasks.push(options.task); directories.push(options.workspacePath);
+			assert.equal(options.model, 'gpt-5.6-terra');
+			assert.match(await readFile(join(options.workspacePath, 'src/pricing.ts'), 'utf8'), /quotedPrice/);
+			const base = { actor: 'codex-app-server', evidenceGrade: 'observed-native', correlationId: 'test-command' };
+			await sink.append({ ...base, kind: 'command.started', payload: { executable: 'npm test' } });
+			await sink.append({ ...base, kind: 'process.output', payload: { stream: 'stdout', text: 'negative quantities must be rejected: assertion failed' } });
+			await sink.append({ ...base, kind: 'command.completed', payload: { executable: 'npm test', exitCode: 1 } });
+			await sink.append({ ...base, kind: 'agent.message', payload: { role: 'assistant', text: 'The negative quantity test failed in test/pricing.test.ts.' } });
+			await sink.complete('completed'); onFinished(options.sessionId);
+		}, async cancel() {}, async shutdown() {},
+	}) });
+	context.after(() => dashboard.close());
+	const config = await fetch(new URL('/api/config', dashboard.url)).then((r) => r.json());
+	assert.equal(config.mode, 'codex'); assert.equal(config.model, 'gpt-5.6-terra');
+	const post = (message) => fetch(new URL('/api/chat', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) }).then((r) => r.json());
+	const first = await waitForRun(dashboard.url, (await post('Run the pricing tests.')).runId);
+	assert.equal(first.status, 'completed');
+	assert.match(JSON.stringify(first.activity), /negative quantities/);
+	assert.ok(first.trace.spanCount > 2);
+	const second = await waitForRun(dashboard.url, (await post('Which test failed earlier?')).runId);
+	assert.equal(second.status, 'completed');
+	assert.equal(directories[0], directories[1]); assert.doesNotMatch(directories[0], /sample-workspace$/);
+	assert.match(tasks[1], /Run the pricing tests/); assert.match(tasks[1], /negative quantity test failed/);
+});
 
 async function waitForRun(baseUrl, runId) {
 	for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -30,12 +91,12 @@ test('web dashboard records a browser interaction as nested SDK spans', async (t
 
 	const page = await fetch(dashboard.url);
 	assert.equal(page.status, 200);
-	assert.match(await page.text(), /Workspace review/);
+	assert.match(await page.text(), /Workspace chat/);
 	const logo = await fetch(new URL('/logo.png', dashboard.url));
 	assert.equal(logo.status, 200);
 	assert.match(logo.headers.get('content-type'), /image\/png/);
 	const config = await fetch(new URL('/api/config', dashboard.url)).then((response) => response.json());
-	assert.deepEqual(config.workspace.files, ['README.md', 'src/inventory.ts', 'src/pricing.ts']);
+	assert.ok(config.workspace.files.includes('test/pricing.test.ts'));
 
 	const started = await fetch(new URL('/api/chat', dashboard.url), {
 		body: JSON.stringify({ message: 'Show the browser trace for this request.' }),
@@ -86,6 +147,8 @@ test('dashboard shutdown cancels outstanding log answers without waiting for the
 	const controller = new AbortController();
 	const pending = fetch(new URL('/api/logs/query', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'Summarize', synthesis: 'model' }), signal: controller.signal }).catch(() => undefined);
 	await ready;
+	const change = await fetch(new URL('/api/workspace', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: '' }) });
+	assert.equal(change.status, 409, 'Changing folders must not mix an active answer with another workspace.');
 	let closed = false;
 	const closing = dashboard.close().then(() => { closed = true; });
 	const deadline = setTimeout(() => controller.abort(), 1_000);
@@ -195,14 +258,14 @@ test('dashboard presentation and JSON export redact prompt secrets without chang
 	assert.ok(exported.includes('[REDACTED]'));
 });
 
-test('dashboard defaults to Copilot CLI and reports its actual model rather than OpenAI configuration', async (testContext) => {
+test('explicit Copilot mode reports its actual model rather than OpenAI configuration', async (testContext) => {
 	const previousProvider = process.env.MODEL_WORKLOG_DEMO_PROVIDER;
 	const previousModel = process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL;
 	let dashboard;
 	try {
 		delete process.env.MODEL_WORKLOG_DEMO_PROVIDER;
 		process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL = 'unrelated-openai-model';
-		dashboard = await startWebDashboard({ copilotRelayFactory: (sink, options, onFinished) => ({
+		dashboard = await startWebDashboard({ provider: 'copilot', copilotRelayFactory: (sink, options, onFinished) => ({
 			async start() {
 				assert.equal(options.model, undefined);
 				await sink.append({ actor: 'copilot-cli', evidenceGrade: 'observed-native', kind: 'agent.message', payload: { role: 'assistant', text: 'Copilot reviewed the workspace.' } });

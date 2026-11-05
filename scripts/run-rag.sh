@@ -24,6 +24,9 @@ case "$mode" in demo|--check|--no-open|--cli|--no-chat|--setup-only) ;; -h|--hel
 if [ "$#" -gt 1 ]; then usage >&2; exit 2; fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+if [ ! -f "$root/.env" ]; then
+  (umask 077; cp "$root/.env.example" "$root/.env")
+fi
 tools="$root/.cache/rag-tools"
 mkdir -p "$tools" "$root/output/rag"
 printf 'Repository: %s\n' "$root"

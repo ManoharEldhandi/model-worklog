@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -12,6 +13,7 @@ import { resolveAgentCli } from 'model-worklog-sdk';
 import { startWebDashboard } from '../examples/web-dashboard/server.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+try { process.loadEnvFile(join(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') { throw error; } }
 const python = process.env.MODEL_WORKLOG_RAG_PYTHON ?? join(root, '.venv-rag/bin/python');
 const cache = process.env.MODEL_WORKLOG_MODEL_CACHE ?? join(homedir(), '.cache/model-worklog/models');
 const temporary = await mkdtemp(join(tmpdir(), 'model-worklog-rag-demo-'));
@@ -92,17 +94,17 @@ try {
 		await recordSample(env);
 		if (process.argv[2] === '--cli' && process.stdin.isTTY && process.stdout.isTTY) { await chat(env); }
 	} else {
-		let provider = process.env.MODEL_WORKLOG_DEMO_PROVIDER ?? 'copilot';
-		if (provider === 'copilot') {
-			try { resolveAgentCli('copilot'); }
-			catch (error) { if (process.env.MODEL_WORKLOG_DEMO_PROVIDER) { throw error; } provider = 'offline-demo'; console.log('Copilot CLI is unavailable. Local search and evidence summaries remain available.'); }
+		let provider = process.env.MODEL_WORKLOG_DEMO_PROVIDER ?? 'codex';
+		if (['codex', 'copilot'].includes(provider)) {
+			try { resolveAgentCli(provider); }
+			catch { throw new Error(`Install ${provider} CLI and run ${provider} login, then retry. To inspect an explicitly labelled offline example, set MODEL_WORKLOG_DEMO_PROVIDER=offline-demo.`); }
 		}
-		dashboard = await startWebDashboard({ provider, ragOptions: {
-			store: new ChromaLogVectorStore({ url: env.MODEL_WORKLOG_CHROMA_URL, collection: 'browser-log-demo' }),
+		dashboard = await startWebDashboard({ provider, createRagOptions: () => ({
+			store: new ChromaLogVectorStore({ url: env.MODEL_WORKLOG_CHROMA_URL, collection: `browser-log-${randomUUID()}` }),
 			embedder: new OpenAiLogEmbedder({ endpoint: env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
 			reranker: new HttpLogRagReranker(env.MODEL_WORKLOG_RERANK_URL),
-		} });
-		console.log(`\nModel Logger RAG demo: ${dashboard.url}\nChoose a sample and click Record sample, or capture a workspace review.\nPress Ctrl+C to stop.\n`);
+		}) });
+		console.log(`\nModel Logger RAG demo: ${dashboard.url}\nChoose a project folder or chat with the agent about the configured workspace on the left. Then use Ask logs to investigate its captured activity.\nPress Ctrl+C to stop.\n`);
 		if (process.argv[2] !== '--no-open') {
 			const command = process.platform === 'darwin' ? 'open' : process.env.DISPLAY || process.env.WAYLAND_DISPLAY ? 'xdg-open' : undefined;
 			if (command) { const opener = spawn(command, [dashboard.url], { stdio: 'ignore' }); opener.on('error', () => {}); }
