@@ -16,7 +16,7 @@ import { INTEGRATION_SCOPE } from './tracePrivacy';
 const SESSION_REFRESH_INTERVAL_MS = 1_000;
 const SELECTED_LOG_REFRESH_INTERVAL_MS = 150;
 const EXTENSION_CLIENT_HEARTBEAT_INTERVAL_MS = 10_000;
-const REQUIRED_SUPERVISOR_FEATURES = ['cli-executable-discovery', 'vscode-client-leases', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'semantic-session-logs'];
+const REQUIRED_SUPERVISOR_FEATURES = ['cli-executable-discovery', 'codex-token-usage-v2', 'vscode-client-leases', 'copilot-cli-relay', 'copilot-cli-hook-bridge', 'copilot-hook-turn-completion', 'copilot-cli-interactive-usage', 'semantic-session-logs'];
 
 interface ActiveLogFollower {
 	readonly sessionId: string;

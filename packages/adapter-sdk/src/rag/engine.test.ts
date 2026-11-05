@@ -18,6 +18,18 @@ class Store implements LogRagVectorStore {
 }
 const embedding = (text: string): number[] => /refund|money back/i.test(text) ? [1, 0, 0] : /pool|connection/i.test(text) ? [0, 1, 0] : [0, 0, 1];
 
+test('indexing batches unique chunks across spans and unchanged snapshots need no new embeddings', async () => {
+	const batches: number[] = []; const store = new Store();
+	const rag = new LogRag({ store, embedder: { id: 'batched', model: 'test', async embed(texts) { batches.push(texts.length); return texts.map(embedding); } } });
+	const spans = Array.from({ length: 10 }, (_, index) => span(index + 1, `Unique output number ${index}`));
+	await rag.indexSpans(spans);
+	const chunkCount = new Set([...store.rows.values()].map(({ chunk }) => chunk.contentHash)).size;
+	assert.equal(batches.length, Math.ceil(chunkCount / 16));
+	const calls = batches.length; await rag.indexSpans(spans); assert.equal(batches.length, calls);
+	await rag.indexSpans([span(1, 'Updated output', 'app', 2)]);
+	assert.ok([...store.rows.values()].filter(({ chunk }) => chunk.source.spanId.endsWith('1')).every(({ chunk }) => chunk.source.revision === 2));
+});
+
 test('SDK hybrid retrieval finds paraphrases, filters projects, and supports revision-safe deletion', async () => {
 	const store = new Store(); let batches = 0;
 	const embedder: LogRagEmbedder = { id: 'test-v1', model: 'test', embed: async (texts) => { batches += 1; return texts.map(embedding); } };

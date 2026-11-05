@@ -6,6 +6,36 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+test('background indexing never delays the captured reply and is cancelled on shutdown', async () => {
+	let start; const started = new Promise((resolve) => { start = resolve; }); let cancelled = false;
+	const dashboard = await startWebDashboard({ provider: 'offline-demo', rag: {
+		async sync(_source, _scope, { signal }) { start(); await new Promise((_resolve, reject) => signal.addEventListener('abort', () => { cancelled = true; reject(signal.reason); }, { once: true })); },
+	} });
+	try {
+		const { runId } = await fetch(new URL('/api/chat', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Inspect this project.' }) }).then((r) => r.json());
+		await started; assert.equal((await waitForRun(dashboard.url, runId)).status, 'completed');
+		await dashboard.close(); assert.equal(cancelled, true);
+	} finally { await dashboard.close(); }
+});
+
+test('interrupted agent work retains reported usage and explains the budget that stopped it', async (context) => {
+	const dashboard = await startWebDashboard({ provider: 'codex', codexRelayFactory: (sink, options, onFinished) => ({
+		async start() {
+			assert.equal(options.maxTokens, 250000);
+			await sink.recordUsage({ source: 'provider-reported', provider: 'openai', model: 'gpt-5.6-terra', inputTokens: 100, outputTokens: 30, totalTokens: 130 }, 'observed-native');
+			await sink.append({ kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'computed', payload: { phase: 'usage-budget-exceeded', maxTokens: 100, reportedTokens: 130 } });
+			await sink.complete('interrupted'); onFinished(options.sessionId);
+		}, async cancel() {}, async shutdown() {},
+	}) });
+	context.after(() => dashboard.close());
+	const { runId } = await fetch(new URL('/api/chat', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Inspect the code.' }) }).then((r) => r.json());
+	const run = await waitForRun(dashboard.url, runId);
+	assert.equal(run.status, 'failed'); assert.equal(run.usage.totalTokens, 130);
+	assert.match(run.error, /Token budget reached/); assert.doesNotMatch(run.error, /login/);
+	const traceUsage = run.trace.activity.find((entry) => entry.category === 'usage');
+	assert.ok(traceUsage); assert.match(JSON.stringify(traceUsage), /130/);
+});
+
 test('folder selection hides default paths, resets old logs, and never deletes the selected project', async () => {
 	const folder = await mkdtemp(join(tmpdir(), 'logger-workspace-selection-'));
 	const sentinel = join(folder, 'keep.txt'); await writeFile(sentinel, 'keep this project');
@@ -40,7 +70,7 @@ test('Codex chat works in the sample copy, captures commands, and carries prior 
 	const dashboard = await startWebDashboard({ provider: 'codex', codexRelayFactory: (sink, options, onFinished) => ({
 		async start() {
 			tasks.push(options.task); directories.push(options.workspacePath);
-			assert.equal(options.model, 'gpt-5.6-terra');
+			assert.equal(options.model, 'gpt-5.6-terra'); assert.equal(options.effort, 'low');
 			assert.match(await readFile(join(options.workspacePath, 'src/pricing.ts'), 'utf8'), /quotedPrice/);
 			const base = { actor: 'codex-app-server', evidenceGrade: 'observed-native', correlationId: 'test-command' };
 			await sink.append({ ...base, kind: 'command.started', payload: { executable: 'npm test' } });

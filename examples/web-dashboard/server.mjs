@@ -286,12 +286,30 @@ function workspaceTask(message, history, provider) {
 	].join('\n\n');
 }
 
-async function requestWorkspaceAgent(run, context, recordTraceEvent, parent) {
+function recordSpanUsage(modelSpan, usage) {
+	if (usage?.source !== undefined) {
+		const model = text(usage.models?.[0] ?? usage.model);
+		const provider = text(usage.providers?.[0] ?? usage.provider);
+		modelSpan.setUsage({
+			source: usage.source,
+			...(provider === undefined ? {} : { provider }),
+			...(model === undefined ? {} : { model }),
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			cacheReadTokens: usage.cacheReadTokens,
+			cacheWriteTokens: usage.cacheWriteTokens,
+			reasoningTokens: usage.reasoningTokens,
+			totalTokens: usage.totalTokens,
+		});
+	}
+}
+
+async function requestWorkspaceAgent(run, context, recordTraceEvent, parent, onUsage) {
 	const tool = context.provider.kind;
 	recordTraceEvent(`${tool}.workspace.started`, { workspace: 'isolated-copy' });
 	const started = await supervisorRequest(context.collector, context.collectorToken, `/v1/${tool}-sessions`, 'POST', {
 		maxDurationMs: COPILOT_MAX_DURATION_MS,
-		...(tool === 'copilot' ? { captureReasoning: true } : {}),
+		...(tool === 'copilot' ? { captureReasoning: true } : { effort: 'low', maxTokens: 250_000 }),
 		task: workspaceTask(run.message, context.history, tool),
 		workspacePath: context.workspacePath,
 		...(context.provider.model === undefined ? {} : { model: context.provider.model }),
@@ -325,16 +343,22 @@ async function requestWorkspaceAgent(run, context, recordTraceEvent, parent) {
 	const completed = await supervisorRequest(context.collector, context.collectorToken, `/v1/sessions/${encodeURIComponent(sessionId)}`, 'GET');
 	const session = value(completed, 'session');
 	const state = text(value(session, 'state'));
+	const usage = usageFromSession(session);
+	run.usage = usage; onUsage?.(usage);
 	const projected = [...projectToolSpans(run.copilotEvents, { projectId: PROJECT_ID, parent, agent: tool }), ...projectActivitySpans(run.log, { projectId: PROJECT_ID, parent, agent: tool })];
 	for (let offset = 0; offset < projected.length; offset += 100) {
 		await supervisorRequest(context.collector, context.writerToken, '/v2/traces/batch', 'POST', { schemaVersion: 1, spans: projected.slice(offset, offset + 100) });
 	}
 	if (state !== 'completed') {
-		throw new Error(`${tool} session ended with state ${state ?? 'unknown'}. ${run.copilotEvents.filter((event) => event.payload.userFacing === true).map((event) => event.payload.message).join(' ').slice(0, 1000)} Check ${tool} login and the selected model.`);
+		const budget = run.copilotEvents.find((event) => event.payload.phase === 'usage-budget-exceeded');
+		const interruption = run.copilotEvents.find((event) => event.payload.phase === 'interrupt-requested');
+		const reason = budget ? `Token budget reached (${budget.payload.reportedTokens}/${budget.payload.maxTokens} cumulative tokens, including cached input).`
+			: interruption?.payload.reason === 'duration-limit' ? 'The task reached its duration limit.'
+			: run.copilotEvents.filter((event) => event.payload.userFacing === true).map((event) => event.payload.message).join(' ').slice(0, 1000);
+		throw new Error(`${tool} session ended with state ${state ?? 'unknown'}. ${reason || `Check ${tool} login and the selected model.`}`);
 	}
 	const finalMessage = [...run.copilotEvents].reverse().find((event) => event.kind === 'agent.message' && event.payload.role === 'assistant' && event.payload.delta !== true && event.payload.agentId === undefined);
 	const content = typeof finalMessage?.payload.text === 'string' ? finalMessage.payload.text : '';
-	const usage = usageFromSession(session);
 	const model = usage?.models.length === 1 ? text(usage.models[0]) : context.provider.model;
 	return {
 		content: content === '' ? `${tool} completed without returning a visible assistant message.` : content,
@@ -386,25 +410,11 @@ async function executeRun(run, context) {
 				serializeResult: (reply) => ({ ...(reply.model === undefined ? {} : { model: reply.model }), provider: reply.provider, response: reply.content }),
 			}, async (modelSpan) => {
 				const reply = ['codex', 'copilot'].includes(context.provider.kind)
-					? await requestWorkspaceAgent(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context)
+					? await requestWorkspaceAgent(run, context, (name, attributes = {}) => modelSpan.addEvent(name, attributes), modelSpan.context, (usage) => recordSpanUsage(modelSpan, usage))
 					: await requestModel(run.message, context.provider);
 				modelSpan.setAttributes({ ...(reply.model === undefined ? {} : { 'model.name': reply.model }), 'provider.name': reply.provider, 'response.mode': reply.mode });
 				modelSpan.addEvent('response.received', { mode: reply.mode, responseLength: reply.content.length });
-				if (reply.usage?.source !== undefined) {
-					const model = text(reply.usage.models?.[0] ?? reply.usage.model);
-					const provider = text(reply.usage.providers?.[0] ?? reply.usage.provider);
-					modelSpan.setUsage({
-						source: reply.usage.source,
-						...(provider === undefined ? {} : { provider }),
-						...(model === undefined ? {} : { model }),
-						inputTokens: reply.usage.inputTokens,
-						outputTokens: reply.usage.outputTokens,
-						cacheReadTokens: reply.usage.cacheReadTokens,
-						cacheWriteTokens: reply.usage.cacheWriteTokens,
-						reasoningTokens: reply.usage.reasoningTokens,
-						totalTokens: reply.usage.totalTokens,
-					});
-				}
+				if (!['codex', 'copilot'].includes(context.provider.kind)) { recordSpanUsage(modelSpan, reply.usage); }
 				return reply;
 			});
 			run.response = result.content;
@@ -509,12 +519,13 @@ function rememberRun(runs, run) {
 	runs.set(run.id, run);
 }
 
-function publicConfig(provider, modelSynthesis, semanticSearch, workspace) {
+function publicConfig(provider, modelSynthesis, semanticSearch, workspace, answerModel) {
 	return {
 		collector: 'temporary local collector',
 		mode: provider.kind,
 		model: provider.model,
 		modelSynthesis,
+		answerModel,
 		semanticSearch,
 		provider: provider.kind === 'codex' ? 'Codex CLI' : provider.kind === 'copilot' ? 'GitHub Copilot CLI' : provider.kind === 'offline-demo' ? 'Built-in demo responder' : 'OpenAI-compatible endpoint',
 		workspace,
@@ -532,7 +543,7 @@ export async function startWebDashboard(options = {}) {
 		kind: providerKind,
 		model: options.model ?? process.env.MODEL_WORKLOG_DEMO_MODEL ?? (providerKind === 'codex' ? 'gpt-5.6-terra' : providerKind === 'openai-compatible' ? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini' : undefined),
 	};
-	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'codex' ? new CodexLogAnswerGenerator({ model: provider.model }) : provider.kind === 'copilot'
+	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'codex' ? new CodexLogAnswerGenerator({ model: options.answerModel ?? process.env.MODEL_WORKLOG_DEMO_ANSWER_MODEL ?? 'gpt-5.6-luna' }) : provider.kind === 'copilot'
 		? new CopilotLogAnswerGenerator({ model: provider.model })
 		: provider.kind === 'openai-compatible' && provider.endpoint !== undefined ? new OpenAiLogAnswerGenerator({ endpoint: provider.endpoint, model: provider.model, apiKey: provider.apiKey }) : undefined);
 	const sampleWorkspacePath = await realpath(fileURLToPath(new URL('./sample-workspace', import.meta.url)));
@@ -546,8 +557,10 @@ export async function startWebDashboard(options = {}) {
 		const isolatedCopy = selected === sampleWorkspacePath;
 		const workspacePath = isolatedCopy ? await mkdtemp(join(tmpdir(), 'model-worklog-dashboard-workspace-')) : selected;
 		const dataDirectory = await mkdtemp(join(tmpdir(), 'model-worklog-web-demo-'));
-		let collector;
+		let collector; let warming; let warmAgain = false;
+		const indexing = new AbortController();
 		const dispose = async () => {
+			indexing.abort(); await warming;
 			await collector?.close();
 			if (isolatedCopy) { await rm(workspacePath, { force: true, recursive: true }); }
 			await rm(dataDirectory, { force: true, recursive: true });
@@ -563,12 +576,21 @@ export async function startWebDashboard(options = {}) {
 			const ragOptions = options.createRagOptions?.() ?? options.ragOptions ?? (process.env.MODEL_WORKLOG_CHROMA_URL && process.env.MODEL_WORKLOG_EMBEDDING_URL ? {
 				store: new ChromaLogVectorStore({ url: process.env.MODEL_WORKLOG_CHROMA_URL, collection: `web-demo-${randomUUID()}` }),
 				embedder: new OpenAiLogEmbedder({ endpoint: process.env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
-				...(process.env.MODEL_WORKLOG_RERANK_URL ? { reranker: new HttpLogRagReranker(process.env.MODEL_WORKLOG_RERANK_URL) } : {}),
+				...(process.env.MODEL_WORKLOG_RERANK_URL ? { reranker: new HttpLogRagReranker(process.env.MODEL_WORKLOG_RERANK_URL, process.env.MODEL_WORKLOG_RERANK_MODEL ?? 'ms-marco-MiniLM-L-12-v2') } : {}),
 			} : undefined);
 			const rag = options.rag ?? (ragOptions ? new LogRag(ragOptions) : undefined);
 			const queryLogs = rag ? createSdkLogQuery({ client: new LocalSupervisorClient({ supervisorUrl: collector.url, token: reader.token }), rag, generator: logAnswerGenerator }) : undefined;
 			await supervisorRequest(collector, collector.authToken, '/v1/workspaces/trust', 'POST', { workspacePath });
-			return { workspacePath, collector, writer, reader, rag, queryLogs, dispose,
+			const warm = () => {
+				if (!queryLogs || indexing.signal.aborted) { return; }
+				warmAgain = true;
+				if (warming) { return; }
+				warming = (async () => {
+					do { warmAgain = false; await queryLogs.prepare({ projectId: PROJECT_ID }, indexing.signal); }
+					while (warmAgain && !indexing.signal.aborted);
+				})().catch(() => undefined).finally(() => { warming = undefined; });
+			};
+			return { workspacePath, collector, writer, reader, rag, queryLogs, dispose, warm,
 				publicWorkspace: { id: randomUUID(), label: isolatedCopy ? 'Harbor Inventory' : basename(selected), isolatedCopy, files: isolatedCopy ? SAMPLE_WORKSPACE_FILES : [] } };
 		} catch (error) { await dispose(); throw error; }
 	}
@@ -577,7 +599,7 @@ export async function startWebDashboard(options = {}) {
 	let { workspacePath, collector, writer, reader, rag, queryLogs } = workspace;
 	let switching = false;
 	let workspaceSwitch;
-	const config = () => publicConfig(provider, logAnswerGenerator !== undefined, rag !== undefined, workspace.publicWorkspace);
+	const config = () => publicConfig(provider, logAnswerGenerator !== undefined, rag !== undefined, workspace.publicWorkspace, logAnswerGenerator?.model);
 	const runs = new Map();
 	const activeQueries = new Set();
 	let activeSample;
@@ -646,7 +668,8 @@ export async function startWebDashboard(options = {}) {
 				if ([...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'A capture is already running.'); }
 				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message: 'Offline inventory example', status: 'running' };
 				rememberRun(runs, run);
-				activeSample = executeSampleRun(run, { collector, writerToken: writer.token, readerToken: reader.token, workspacePath }).finally(() => { activeSample = undefined; });
+				const owner = workspace;
+				activeSample = executeSampleRun(run, { collector, writerToken: writer.token, readerToken: reader.token, workspacePath }).finally(() => { activeSample = undefined; owner.warm(); });
 				sendJson(response, 202, { runId: run.id });
 				return;
 			}
@@ -689,11 +712,12 @@ export async function startWebDashboard(options = {}) {
 				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message, status: 'running' };
 				addEvent(run, 'agent.message', { role: 'user', text: message });
 				rememberRun(runs, run);
+				const owner = workspace;
 				void executeRun(run, { history: [...runs.values()].filter((previous) => previous.id !== run.id && previous.status === 'completed' && previous.agentSessionId).slice(-4).flatMap((previous) => [{ role: 'user', content: previous.message.slice(0, 2000) }, { role: 'assistant', content: (previous.response ?? '').slice(0, 2000) }]), collector, collectorToken: collector.authToken, provider, readerToken: reader.token, workspacePath, writerToken: writer.token }).catch((error) => {
 					run.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
 					run.status = 'failed';
 					addEvent(run, 'session.failed', { state: 'failed', message: run.error });
-				});
+				}).finally(() => owner.warm());
 				sendJson(response, 202, { runId: run.id });
 				return;
 			}

@@ -28,7 +28,8 @@ npm run build
 npm run demo:web
 ```
 
-The default workspace agent is Codex with `gpt-5.6-terra`, authenticated with
+The default workspace agent is Codex with `gpt-5.6-terra` at low reasoning effort;
+log answers use `gpt-5.6-luna`. Both use the existing CLI account, authenticated with
 `codex login`. Model calls use that account. Copy `.env.example` to `.env` and
 set `MODEL_WORKLOG_DEMO_WORKSPACE` to choose a local default without committing
 a personal path. Workspace configuration exposes the folder name rather than
@@ -253,3 +254,29 @@ redacted retrieved evidence. Its JSON answer and citations are validated before
 display; failures fall back to local evidence. This requires a recent Codex CLI
 with `--ignore-user-config` support. Workspace tasks run separately with the
 normal Codex workspace sandbox.
+
+Exact tool-count questions use collector aggregates directly and skip embeddings
+and model startup. Other questions retain Chroma/BM25/RRF and local reranking.
+Changed log chunks are embedded in batches across spans; unchanged revisions
+reuse their index. Local inference uses two CPU threads by default. These changes
+retain the BGE embedding model. The SDK quality profile keeps the 12-layer
+MiniLM reranker; the interactive demo uses two-layer TinyBERT with a .5 vector
+blend for speed. Its curated source precision@1 was 96.9% and recall@3 was 100%,
+versus 100%/100% for the full profile. The relevant source is still in the answer
+context for every fixture. These are development regressions, not production
+accuracy estimates. Set `MODEL_WORKLOG_DEMO_RERANK_MODEL=ms-marco-MiniLM-L-12-v2`
+for the full profile. `MODEL_WORKLOG_DEMO_ANSWER_MODEL` selects the answer model.
+
+The dashboard starts indexing completed captures in the background. Questions
+still refresh their scoped source snapshot before retrieval, including pruning,
+so warming the index does not allow stale or cross-workspace results.
+
+Codex capture accepts the current cumulative `tokenUsage.total` counters and the
+legacy usage format. Repeated cumulative updates do not double-count tokens.
+Missing usage remains unknown. Whitespace fragments join their completed message;
+adapter diagnostics stay separate. Long message fields start collapsed and can
+be expanded. Old captures with missing token reports cannot be reconstructed.
+
+Browser workspace tasks have a 250,000-token cumulative budget, including cached
+input. Standalone CLI logger defaults are unchanged. Reported usage is retained
+when a task fails or is interrupted, and budget stops identify the actual limit.

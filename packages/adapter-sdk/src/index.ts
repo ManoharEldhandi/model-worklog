@@ -28,6 +28,7 @@ import { readTracePage, type TraceReadOptions } from './traceReadClient';
 import { normalizeProviderUsage, type TokenUsageMapping, type UsageNormalization, type UsageProviderSelector } from './usage';
 
 export * from './usage';
+export { normalizeCodexUsage } from './codexUsage';
 export { resolveAgentCli, spawnAgentCli, type AgentCli, type AgentCliResolutionOptions } from './executables';
 export * from './vendorAdapters';
 export * from './tracing/exporter';

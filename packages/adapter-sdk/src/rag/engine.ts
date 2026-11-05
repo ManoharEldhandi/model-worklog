@@ -64,6 +64,7 @@ export class LogRag {
 		for (const chunk of chunkSpans(spans)) { const key = sourceKey(chunk); const prior = grouped.get(key); if (prior === undefined || prior[0]!.source.revision < chunk.source.revision) { grouped.set(key, [chunk]); } else if (prior[0]!.source.revision === chunk.source.revision) { if (prior[0]!.spanHash !== chunk.spanHash) { throw new Error('Conflicting span revision.'); } if (!prior.some((item) => item.id === chunk.id)) { prior.push(chunk); } } }
 		let indexedSpans = 0; let skippedSpans = 0;
 		const cache = new Map<string, readonly number[]>();
+		const pending: LogRagChunk[][] = [];
 		for (const chunks of grouped.values()) {
 			signal.throwIfAborted(); const first = chunks[0]!;
 			const scope = { projectId: first.source.projectId, traceId: first.source.traceId, spanId: first.source.spanId };
@@ -76,13 +77,21 @@ export class LogRag {
 				if (current.some((chunk) => chunk.spanHash !== first.spanHash)) { throw new Error('Conflicting span revision.'); }
 				if (current.length === chunks.length && chunks.every((chunk) => current.some((item) => item.id === chunk.id))) { skippedSpans += 1; continue; }
 			}
-			const missing = [...new Map(chunks.filter((chunk) => !cache.has(chunk.contentHash)).map((chunk) => [chunk.contentHash, chunk])).values()];
-			for (let offset = 0; offset < missing.length; offset += 16) {
-				const batch = missing.slice(offset, offset + 16);
-				const vectors = await bounded(this.options.embedder.embed(batch.map((chunk) => chunk.text), signal), signal);
-				if (vectors.length !== batch.length) { throw new Error('Embedding count mismatch.'); }
-				batch.forEach((chunk, index) => cache.set(chunk.contentHash, normalizeVector(vectors[index]!)));
-			}
+			pending.push(chunks);
+		}
+		// Batch across changed spans so a short log entry does not require its own model call.
+		const unique = [...new Map(pending.flat().map((chunk) => [chunk.contentHash, chunk])).values()];
+		for (let offset = 0; offset < unique.length; offset += 16) {
+			const batch = unique.slice(offset, offset + 16);
+			const vectors = await bounded(this.options.embedder.embed(batch.map((chunk) => chunk.text), signal), signal);
+			if (vectors.length !== batch.length) { throw new Error('Embedding count mismatch.'); }
+			batch.forEach((chunk, index) => cache.set(chunk.contentHash, normalizeVector(vectors[index]!)));
+		}
+		const dimensions = new Set([...cache.values()].map((vector) => vector.length));
+		if (dimensions.size > 1) { throw new Error('Embedding dimensions changed within a batch.'); }
+		for (const chunks of pending) {
+			const first = chunks[0]!;
+			const scope = { projectId: first.source.projectId, traceId: first.source.traceId, spanId: first.source.spanId };
 			const vectors = chunks.map((chunk) => cache.get(chunk.contentHash)!);
 			if (vectors.some((vector) => vector.length !== vectors[0]!.length)) { throw new Error('Embedding dimensions changed within a span.'); }
 			await bounded(this.options.store.upsert(chunks, vectors, signal), signal);

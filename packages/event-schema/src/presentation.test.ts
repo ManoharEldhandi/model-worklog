@@ -410,6 +410,15 @@ test('interleaved reasoning streams retain their first position and replace delt
 	assert.equal(log.entries[1]?.resources[0]?.path, 'parser.ts');
 });
 
+test('historical missing-text adapter notices cannot replace a real completed assistant reply', () => {
+	const log = buildSessionLog([
+		{ ...event('agent.message', { role: 'assistant', text: 'A complete answer.', final: true }), eventId: 'answer', sequence: 1, correlationId: 'answer' },
+		{ ...event('agent.message', { adapter: 'codex-app-server', method: 'item/agentMessage/delta', message: 'Message delta did not include text.' }), evidenceGrade: 'unknown', unknownReason: 'not-observed', eventId: 'notice', sequence: 2, correlationId: undefined },
+	], { state: 'completed' });
+	assert.equal(log.entries.length, 1); assert.equal(log.entries[0]?.status, 'completed');
+	assert.equal(log.entries[0]?.details[0]?.value, 'A complete answer.'); assert.equal(log.diagnostics.length, 1);
+});
+
 test('SDK trace logs aggregate model usage once, preserve operations and declare partial pages', () => {
 	const root = storedSpan({ kind: 'agent', usage: { source: 'adapter-reported', totalTokens: 999 } });
 	const first = storedSpan({ kind: 'model', spanId: '3'.repeat(16), usage: { source: 'provider-reported', requestId: 'request', totalTokens: 10, inputTokens: 6, outputTokens: 4 } });

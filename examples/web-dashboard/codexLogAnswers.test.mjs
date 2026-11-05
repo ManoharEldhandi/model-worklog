@@ -5,6 +5,10 @@ import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
 import { CodexLogAnswerGenerator } from './codexLogAnswers.mjs';
 
+test('log answers default to the small model independently of the workspace model', () => {
+	assert.equal(new CodexLogAnswerGenerator().model, 'gpt-5.6-luna');
+});
+
 test('Codex answers use the selected model and only supplied evidence, with cleanup', async () => {
 	let configuration; let argumentsValue; let input = '';
 	const generator = new CodexLogAnswerGenerator({ model: 'gpt-5.6-terra', spawn(args, options) {

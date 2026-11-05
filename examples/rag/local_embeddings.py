@@ -15,14 +15,24 @@ def main():
     parser.add_argument('--cache-dir', default=None)
     parser.add_argument('--reranker', action='store_true', help='Also load the optional local cross-encoder')
     parser.add_argument('--reranker-model', default='ms-marco-MiniLM-L-12-v2')
+    parser.add_argument('--threads', type=int, default=2, choices=range(1, 17))
     args = parser.parse_args()
-    model = TextEmbedding(model_name=args.model, cache_dir=args.cache_dir, threads=2)
+    model = TextEmbedding(model_name=args.model, cache_dir=args.cache_dir, threads=args.threads)
     list(model.embed(['Model Logger embedding warmup']))
     ranker = None
     rerank_request = None
     if args.reranker:
         from flashrank import Ranker, RerankRequest
+        from flashrank.Config import model_file_map
+        import onnxruntime as ort
         ranker = Ranker(model_name=args.reranker_model, cache_dir=args.cache_dir or '/tmp/model-worklog-reranker', max_length=512)
+        # FlashRank's default session uses every CPU core. Bound local inference
+        # threads while retaining the same model, tokenizer and ranking scores.
+        ranker.session = None
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = args.threads
+        options.inter_op_num_threads = 1
+        ranker.session = ort.InferenceSession(str(ranker.model_dir / model_file_map[args.reranker_model]), sess_options=options, providers=['CPUExecutionProvider'])
         rerank_request = RerankRequest
     lock = threading.Lock()
 

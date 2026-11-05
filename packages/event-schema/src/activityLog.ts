@@ -127,6 +127,7 @@ function aggregateUsage(events: readonly SessionEvent[]): LogUsage {
 
 function diagnostic(event: SessionEvent): boolean {
 	return (event.kind === 'adapter.lifecycle' && event.payload.userFacing !== true) || (event.kind.startsWith('session.') && event.kind !== 'session.failed')
+		|| (event.kind === 'agent.message' && event.evidenceGrade === 'unknown' && event.payload.adapter !== undefined && event.payload.text === undefined)
 		|| (event.kind === 'agent.summary' && event.evidenceGrade === 'unknown' && event.unknownReason === 'redacted');
 }
 

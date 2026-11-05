@@ -34,9 +34,12 @@ function localAnswer(question, answer) {
 /** The demo composes the SDK RAG port with collector-authorized exact counts. */
 export function createSdkLogQuery({ client, rag, generator }) {
 	const source = new CollectorLogSource(client);
-	return async (request, cancellation) => {
+	const query = async (request, cancellation) => {
 		const signal = AbortSignal.any([AbortSignal.timeout(55_000), ...(cancellation ? [cancellation] : [])]); signal.throwIfAborted();
 		const base = await client.askLogs({ ...request, synthesis: 'extractive' }, { signal });
+		// Exact tool totals are already computed over the scoped collector snapshot.
+		// They need neither embedding/reranking nor an additional model request.
+		if (base.intent === 'tools') { return base; }
 		const originals = new Map();
 		await rag.sync({ async load(scope, cancellation) {
 			const snapshot = await source.load(scope, cancellation);
@@ -82,4 +85,6 @@ export function createSdkLogQuery({ client, rag, generator }) {
 			return LogQueryResponseSchema.parse({ ...local, generation: { mode: 'extractive', status: 'fallback' }, limitations: [...local.limitations, 'The answer provider was unavailable or returned invalid citations. The sources remain available.'] });
 		}
 	};
+	query.prepare = (scope, signal) => { signal?.throwIfAborted(); return rag.sync(source, scope, { signal, prune: true }); };
+	return query;
 }

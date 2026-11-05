@@ -15,6 +15,8 @@ import { startWebDashboard } from '../examples/web-dashboard/server.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 try { process.loadEnvFile(join(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') { throw error; } }
 const python = process.env.MODEL_WORKLOG_RAG_PYTHON ?? join(root, '.venv-rag/bin/python');
+const rerankModel = process.env.MODEL_WORKLOG_DEMO_RERANK_MODEL ?? 'ms-marco-TinyBERT-L-2-v2';
+const retrievalProfile = { minRerankScore: .0001, rerankRecallFloor: .8, rerankVectorWeight: rerankModel === 'ms-marco-TinyBERT-L-2-v2' ? .5 : .75 };
 const cache = process.env.MODEL_WORKLOG_MODEL_CACHE ?? join(homedir(), '.cache/model-worklog/models');
 const temporary = await mkdtemp(join(tmpdir(), 'model-worklog-rag-demo-'));
 const cancellation = new AbortController(); const { signal } = cancellation;
@@ -55,10 +57,10 @@ async function recordSample(env) {
 	await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('The SDK sample did not finish. See the delivery diagnostics above.'))); });
 }
 async function chat(env) {
-	const rag = new LogRag({
+	const rag = new LogRag({ ...retrievalProfile,
 		store: new ChromaLogVectorStore({ url: env.MODEL_WORKLOG_CHROMA_URL, collection: 'my-agent-logs' }),
 		embedder: new OpenAiLogEmbedder({ endpoint: env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
-		reranker: new HttpLogRagReranker(env.MODEL_WORKLOG_RERANK_URL),
+		reranker: new HttpLogRagReranker(env.MODEL_WORKLOG_RERANK_URL, rerankModel),
 	});
 	const terminal = createInterface({ input: process.stdin, output: process.stdout });
 	terminal.on('SIGINT', interrupt);
@@ -84,10 +86,10 @@ try {
 	const chromaPort = await availablePort(); const modelPort = await availablePort();
 	console.log('Starting isolated Chroma and CPU models. First use downloads weights; later runs reuse the cache.');
 	service('chroma', ['-c', 'from chromadb.cli.cli import app; app()', 'run', '--host', '127.0.0.1', '--port', String(chromaPort), '--path', join(temporary, 'chroma')]);
-	service('models', ['examples/rag/local_embeddings.py', '--port', String(modelPort), '--cache-dir', cache, '--reranker']);
+	service('models', ['examples/rag/local_embeddings.py', '--port', String(modelPort), '--cache-dir', cache, '--reranker', '--reranker-model', rerankModel]);
 	await ready(`http://127.0.0.1:${chromaPort}/api/v2/heartbeat`);
 	await ready(`http://127.0.0.1:${modelPort}/health`);
-	const env = { MODEL_WORKLOG_CHROMA_URL: `http://127.0.0.1:${chromaPort}`, MODEL_WORKLOG_EMBEDDING_URL: `http://127.0.0.1:${modelPort}/v1/embeddings`, MODEL_WORKLOG_RERANK_URL: `http://127.0.0.1:${modelPort}/v1/rerank` };
+	const env = { MODEL_WORKLOG_RERANK_MODEL: rerankModel, MODEL_WORKLOG_RERANK_VECTOR_WEIGHT: String(retrievalProfile.rerankVectorWeight), MODEL_WORKLOG_CHROMA_URL: `http://127.0.0.1:${chromaPort}`, MODEL_WORKLOG_EMBEDDING_URL: `http://127.0.0.1:${modelPort}/v1/embeddings`, MODEL_WORKLOG_RERANK_URL: `http://127.0.0.1:${modelPort}/v1/rerank` };
 	console.log(`Chroma: ${env.MODEL_WORKLOG_CHROMA_URL}\nEmbeddings: ${env.MODEL_WORKLOG_EMBEDDING_URL}`);
 	if (['--cli', '--no-chat'].includes(process.argv[2])) {
 		console.log('\nRecording a refund failure through the SDK and retrieving a cited answer:\n');
@@ -99,10 +101,10 @@ try {
 			try { resolveAgentCli(provider); }
 			catch { throw new Error(`Install ${provider} CLI and run ${provider} login, then retry. To inspect an explicitly labelled offline example, set MODEL_WORKLOG_DEMO_PROVIDER=offline-demo.`); }
 		}
-		dashboard = await startWebDashboard({ provider, createRagOptions: () => ({
+		dashboard = await startWebDashboard({ provider, createRagOptions: () => ({ ...retrievalProfile,
 			store: new ChromaLogVectorStore({ url: env.MODEL_WORKLOG_CHROMA_URL, collection: `browser-log-${randomUUID()}` }),
 			embedder: new OpenAiLogEmbedder({ endpoint: env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
-			reranker: new HttpLogRagReranker(env.MODEL_WORKLOG_RERANK_URL),
+			reranker: new HttpLogRagReranker(env.MODEL_WORKLOG_RERANK_URL, rerankModel),
 		}) });
 		console.log(`\nModel Logger RAG demo: ${dashboard.url}\nChoose a project folder or chat with the agent about the configured workspace on the left. Then use Ask logs to investigate its captured activity.\nPress Ctrl+C to stop.\n`);
 		if (process.argv[2] !== '--no-open') {

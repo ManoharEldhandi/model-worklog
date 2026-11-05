@@ -42,3 +42,20 @@ test('stopping a semantic answer cancels even an answer provider that ignores th
 	await started; controller.abort();
 	await assert.rejects(pending, { name: 'AbortError' });
 });
+
+test('exact counts bypass semantic services and model startup without changing their scope', async () => {
+	const counts = { ...base, intent: 'tools', answer: 'read_file was called 12 times. [A1]' };
+	const query = createSdkLogQuery({ client: { async askLogs(request) { assert.equal(request.scope, undefined); return counts; } }, rag: { sync() { throw new Error('Counts must not index'); } }, generator: { generate() { throw new Error('Counts must not call a model'); } } });
+	const answer = await query(LogQueryRequestSchema.parse({ projectId: 'web-demo', question: 'How many times was read_file used?', synthesis: 'model' }));
+	assert.equal(answer.answer, counts.answer); assert.deepEqual(answer.scope, counts.scope);
+});
+
+test('captures can prepare their index before a question while each question still synchronizes its scope', async () => {
+	const { query, counts } = setup();
+	await query.prepare({ projectId: 'web-demo' }, AbortSignal.timeout(2000));
+	assert.deepEqual(counts(), { synchronized: 1, searches: 0 });
+	await query(LogQueryRequestSchema.parse({ projectId: 'web-demo', question: 'Why did it fail?' }));
+	assert.deepEqual(counts(), { synchronized: 2, searches: 1 });
+	const controller = new AbortController(); controller.abort();
+	assert.throws(() => query.prepare({ projectId: 'web-demo' }, controller.signal), { name: 'AbortError' });
+});

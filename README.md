@@ -76,7 +76,8 @@ bash scripts/run-rag.sh
 
 The launcher installs missing dependencies, builds the SDK, starts Chroma and
 local embedding/reranking models, then opens the dashboard. Codex uses
-`gpt-5.6-terra` and your existing CLI login (`codex login`).
+`gpt-5.6-terra` with low reasoning effort for workspace tasks and the smaller
+`gpt-5.6-luna` for log answers, using your existing CLI login (`codex login`).
 
 The launcher creates `.env` from `.env.example` on first use. Edit it to set the
 default project folder and model. `.env` is ignored by Git; keep personal paths and credentials there. The default is the
@@ -92,7 +93,10 @@ include file paths.
    Use **All retained traces** to compare tasks, or **Latest capture** for one run.
 
 Log questions search captured activity through SDK RAG and return cited answers;
-they do not rerun the workspace task. Switching folders starts a fresh log
+they do not rerun the workspace task. Completed captures are indexed in the
+background, and the demo uses a small reranker for interactive queries. The SDK
+quality profile remains available; see the [profile comparison](docs/log-retrieval.md).
+Switching folders starts a fresh log
 session. Model calls use your Codex account; retrieval runs locally.
 
 ```sh
@@ -111,8 +115,8 @@ reports and service logs are saved in `output/rag/`. See [setup details](docs/sd
 
 The dashboard pairs a workspace agent with its captured activity and a log
 conversation. Run `npm run demo:web` for the same setup as the launcher above.
-Use `MODEL_WORKLOG_DEMO_MODEL` in `.env` to choose another account-supported
-Codex model. `MODEL_WORKLOG_DEMO_PROVIDER=copilot` selects an authenticated
+Use `MODEL_WORKLOG_DEMO_MODEL` and `MODEL_WORKLOG_DEMO_ANSWER_MODEL` in `.env`
+to select account-supported models for workspace tasks and log answers. `MODEL_WORKLOG_DEMO_PROVIDER=copilot` selects an authenticated
 Copilot CLI instead (reviews are read-only). `offline-demo` enables an explicitly
 labelled scripted example without a model account.
 

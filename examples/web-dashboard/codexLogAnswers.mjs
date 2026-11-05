@@ -8,7 +8,7 @@ import { LOG_ANSWER_INSTRUCTIONS, logAnswerContext } from '../../apps/local-supe
 // The answer process receives evidence only; workspace execution is a separate session.
 export class CodexLogAnswerGenerator {
 	provider = 'codex-cli';
-	constructor({ model = 'gpt-5.6-terra', spawn = (args, options) => spawnAgentCli('codex', args, options) } = {}) {
+	constructor({ model = 'gpt-5.6-luna', spawn = (args, options) => spawnAgentCli('codex', args, options) } = {}) {
 		if (!model.trim() || model.length > 128) { throw new Error('Invalid Codex demo model.'); }
 		this.model = model; this.spawn = spawn; this.active = 0;
 	}
