@@ -93,7 +93,10 @@ include file paths.
    Use **All retained traces** to compare tasks, or **Latest capture** for one run.
 
 Log questions search captured activity through SDK RAG and return cited answers;
-they do not rerun the workspace task. Switching folders starts a fresh log
+they do not rerun the workspace task. Completed captures are indexed in the
+background, and the demo uses a small reranker for interactive queries. The SDK
+quality profile remains available; see the [profile comparison](docs/log-retrieval.md).
+Switching folders starts a fresh log
 session. Model calls use your Codex account; retrieval runs locally.
 
 ```sh

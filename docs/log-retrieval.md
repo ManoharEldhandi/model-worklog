@@ -259,8 +259,17 @@ Exact tool-count questions use collector aggregates directly and skip embeddings
 and model startup. Other questions retain Chroma/BM25/RRF and local reranking.
 Changed log chunks are embedded in batches across spans; unchanged revisions
 reuse their index. Local inference uses two CPU threads by default. These changes
-retain the same embedding and reranking models; the answer-model override is
-`MODEL_WORKLOG_DEMO_ANSWER_MODEL`.
+retain the BGE embedding model. The SDK quality profile keeps the 12-layer
+MiniLM reranker; the interactive demo uses two-layer TinyBERT with a .5 vector
+blend for speed. Its curated source precision@1 was 96.9% and recall@3 was 100%,
+versus 100%/100% for the full profile. The relevant source is still in the answer
+context for every fixture. These are development regressions, not production
+accuracy estimates. Set `MODEL_WORKLOG_DEMO_RERANK_MODEL=ms-marco-MiniLM-L-12-v2`
+for the full profile. `MODEL_WORKLOG_DEMO_ANSWER_MODEL` selects the answer model.
+
+The dashboard starts indexing completed captures in the background. Questions
+still refresh their scoped source snapshot before retrieval, including pruning,
+so warming the index does not allow stale or cross-workspace results.
 
 Codex capture accepts the current cumulative `tokenUsage.total` counters and the
 legacy usage format. Repeated cumulative updates do not double-count tokens.

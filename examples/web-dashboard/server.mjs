@@ -557,8 +557,10 @@ export async function startWebDashboard(options = {}) {
 		const isolatedCopy = selected === sampleWorkspacePath;
 		const workspacePath = isolatedCopy ? await mkdtemp(join(tmpdir(), 'model-worklog-dashboard-workspace-')) : selected;
 		const dataDirectory = await mkdtemp(join(tmpdir(), 'model-worklog-web-demo-'));
-		let collector;
+		let collector; let warming; let warmAgain = false;
+		const indexing = new AbortController();
 		const dispose = async () => {
+			indexing.abort(); await warming;
 			await collector?.close();
 			if (isolatedCopy) { await rm(workspacePath, { force: true, recursive: true }); }
 			await rm(dataDirectory, { force: true, recursive: true });
@@ -574,12 +576,21 @@ export async function startWebDashboard(options = {}) {
 			const ragOptions = options.createRagOptions?.() ?? options.ragOptions ?? (process.env.MODEL_WORKLOG_CHROMA_URL && process.env.MODEL_WORKLOG_EMBEDDING_URL ? {
 				store: new ChromaLogVectorStore({ url: process.env.MODEL_WORKLOG_CHROMA_URL, collection: `web-demo-${randomUUID()}` }),
 				embedder: new OpenAiLogEmbedder({ endpoint: process.env.MODEL_WORKLOG_EMBEDDING_URL, model: 'BAAI/bge-small-en-v1.5', queryPrefix: 'query: ', documentPrefix: 'passage: ' }),
-				...(process.env.MODEL_WORKLOG_RERANK_URL ? { reranker: new HttpLogRagReranker(process.env.MODEL_WORKLOG_RERANK_URL) } : {}),
+				...(process.env.MODEL_WORKLOG_RERANK_URL ? { reranker: new HttpLogRagReranker(process.env.MODEL_WORKLOG_RERANK_URL, process.env.MODEL_WORKLOG_RERANK_MODEL ?? 'ms-marco-MiniLM-L-12-v2') } : {}),
 			} : undefined);
 			const rag = options.rag ?? (ragOptions ? new LogRag(ragOptions) : undefined);
 			const queryLogs = rag ? createSdkLogQuery({ client: new LocalSupervisorClient({ supervisorUrl: collector.url, token: reader.token }), rag, generator: logAnswerGenerator }) : undefined;
 			await supervisorRequest(collector, collector.authToken, '/v1/workspaces/trust', 'POST', { workspacePath });
-			return { workspacePath, collector, writer, reader, rag, queryLogs, dispose,
+			const warm = () => {
+				if (!queryLogs || indexing.signal.aborted) { return; }
+				warmAgain = true;
+				if (warming) { return; }
+				warming = (async () => {
+					do { warmAgain = false; await queryLogs.prepare({ projectId: PROJECT_ID }, indexing.signal); }
+					while (warmAgain && !indexing.signal.aborted);
+				})().catch(() => undefined).finally(() => { warming = undefined; });
+			};
+			return { workspacePath, collector, writer, reader, rag, queryLogs, dispose, warm,
 				publicWorkspace: { id: randomUUID(), label: isolatedCopy ? 'Harbor Inventory' : basename(selected), isolatedCopy, files: isolatedCopy ? SAMPLE_WORKSPACE_FILES : [] } };
 		} catch (error) { await dispose(); throw error; }
 	}
@@ -657,7 +668,8 @@ export async function startWebDashboard(options = {}) {
 				if ([...runs.values()].some((run) => run.status === 'running')) { throw new DashboardHttpError(409, 'A capture is already running.'); }
 				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message: 'Offline inventory example', status: 'running' };
 				rememberRun(runs, run);
-				activeSample = executeSampleRun(run, { collector, writerToken: writer.token, readerToken: reader.token, workspacePath }).finally(() => { activeSample = undefined; });
+				const owner = workspace;
+				activeSample = executeSampleRun(run, { collector, writerToken: writer.token, readerToken: reader.token, workspacePath }).finally(() => { activeSample = undefined; owner.warm(); });
 				sendJson(response, 202, { runId: run.id });
 				return;
 			}
@@ -700,11 +712,12 @@ export async function startWebDashboard(options = {}) {
 				const run = { copilotMessages: [], copilotEvents: [], events: [], id: randomUUID(), message, status: 'running' };
 				addEvent(run, 'agent.message', { role: 'user', text: message });
 				rememberRun(runs, run);
+				const owner = workspace;
 				void executeRun(run, { history: [...runs.values()].filter((previous) => previous.id !== run.id && previous.status === 'completed' && previous.agentSessionId).slice(-4).flatMap((previous) => [{ role: 'user', content: previous.message.slice(0, 2000) }, { role: 'assistant', content: (previous.response ?? '').slice(0, 2000) }]), collector, collectorToken: collector.authToken, provider, readerToken: reader.token, workspacePath, writerToken: writer.token }).catch((error) => {
 					run.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
 					run.status = 'failed';
 					addEvent(run, 'session.failed', { state: 'failed', message: run.error });
-				});
+				}).finally(() => owner.warm());
 				sendJson(response, 202, { runId: run.id });
 				return;
 			}

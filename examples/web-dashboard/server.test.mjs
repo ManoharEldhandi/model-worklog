@@ -6,6 +6,18 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+test('background indexing never delays the captured reply and is cancelled on shutdown', async () => {
+	let start; const started = new Promise((resolve) => { start = resolve; }); let cancelled = false;
+	const dashboard = await startWebDashboard({ provider: 'offline-demo', rag: {
+		async sync(_source, _scope, { signal }) { start(); await new Promise((_resolve, reject) => signal.addEventListener('abort', () => { cancelled = true; reject(signal.reason); }, { once: true })); },
+	} });
+	try {
+		const { runId } = await fetch(new URL('/api/chat', dashboard.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Inspect this project.' }) }).then((r) => r.json());
+		await started; assert.equal((await waitForRun(dashboard.url, runId)).status, 'completed');
+		await dashboard.close(); assert.equal(cancelled, true);
+	} finally { await dashboard.close(); }
+});
+
 test('interrupted agent work retains reported usage and explains the budget that stopped it', async (context) => {
 	const dashboard = await startWebDashboard({ provider: 'codex', codexRelayFactory: (sink, options, onFinished) => ({
 		async start() {
