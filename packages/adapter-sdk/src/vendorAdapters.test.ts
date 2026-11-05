@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { ClaudeCodeAdapter, CodexAppServerAdapter, CopilotCliAdapter, CopilotCliHookAdapter, CopilotCliInteractiveAdapter, type AdapterEventSink } from './vendorAdapters';
+import { buildSessionLog, type SessionEvent } from 'model-worklog-schema';
 
 class RecordingSink implements AdapterEventSink {
 	readonly calls: { readonly method: string; readonly payload: unknown; readonly correlationId?: string }[] = [];
@@ -25,6 +26,27 @@ class RecordingSink implements AdapterEventSink {
 		this.calls.push({ method: 'complete', payload: state ?? 'completed' });
 	}
 }
+
+test('Codex whitespace deltas remain in one completed, expandable message instead of phantom interrupted rows', async () => {
+	const sink = new RecordingSink(); const adapter = new CodexAppServerAdapter(sink);
+	for (const delta of ['A long', ' ', 'message\n', '\n', 'with details.']) { await adapter.ingestNotification({ method: 'item/agentMessage/delta', params: { itemId: 'reply', delta } }); }
+	await adapter.ingestNotification({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'reply', text: 'A long message\n\nwith details.', phase: 'final_answer' } } });
+	const events = sink.calls.map((call, index) => ({ schemaVersion: 1, eventId: String(index), sessionId: 'test', sequence: index + 1, occurredAt: '2026-11-05T10:00:00Z', actor: 'codex', evidenceGrade: 'observed-native', kind: call.method, payload: call.payload, correlationId: call.correlationId, redaction: { policyVersion: '1', replacements: 0, truncated: false } })) as SessionEvent[];
+	const responses = buildSessionLog(events, { state: 'completed' }).entries.filter((entry) => entry.category === 'response');
+	assert.equal(responses.length, 1); assert.equal(responses[0]?.status, 'completed');
+	assert.equal(responses[0]?.details[0]?.value, 'A long message\n\nwith details.');
+	assert.equal(sink.calls.filter((call) => call.method.startsWith('unknown:')).length, 0);
+});
+
+test('standalone Codex adapters report cumulative usage once rather than double-counting updates', async () => {
+	const sink = new RecordingSink(); const adapter = new CodexAppServerAdapter(sink);
+	for (const totalTokens of [10, 10, 15]) {
+		await adapter.ingestNotification({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { inputTokens: totalTokens - 2, outputTokens: 2, totalTokens }, last: { totalTokens: 1 } } } });
+	}
+	const usage = sink.calls.filter((call) => call.method === 'usage:openai');
+	assert.equal(usage.length, 2);
+	assert.deepEqual(usage.map((call) => (call.payload as { usage: { total_tokens: number } }).usage.total_tokens), [10, 5]);
+});
 
 test('Claude Code hook adapter maps tool, file, instruction, and lifecycle evidence', async () => {
 	const sink = new RecordingSink();

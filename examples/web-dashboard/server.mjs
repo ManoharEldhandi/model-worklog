@@ -291,7 +291,7 @@ async function requestWorkspaceAgent(run, context, recordTraceEvent, parent) {
 	recordTraceEvent(`${tool}.workspace.started`, { workspace: 'isolated-copy' });
 	const started = await supervisorRequest(context.collector, context.collectorToken, `/v1/${tool}-sessions`, 'POST', {
 		maxDurationMs: COPILOT_MAX_DURATION_MS,
-		...(tool === 'copilot' ? { captureReasoning: true } : {}),
+		...(tool === 'copilot' ? { captureReasoning: true } : { effort: 'low' }),
 		task: workspaceTask(run.message, context.history, tool),
 		workspacePath: context.workspacePath,
 		...(context.provider.model === undefined ? {} : { model: context.provider.model }),
@@ -509,12 +509,13 @@ function rememberRun(runs, run) {
 	runs.set(run.id, run);
 }
 
-function publicConfig(provider, modelSynthesis, semanticSearch, workspace) {
+function publicConfig(provider, modelSynthesis, semanticSearch, workspace, answerModel) {
 	return {
 		collector: 'temporary local collector',
 		mode: provider.kind,
 		model: provider.model,
 		modelSynthesis,
+		answerModel,
 		semanticSearch,
 		provider: provider.kind === 'codex' ? 'Codex CLI' : provider.kind === 'copilot' ? 'GitHub Copilot CLI' : provider.kind === 'offline-demo' ? 'Built-in demo responder' : 'OpenAI-compatible endpoint',
 		workspace,
@@ -532,7 +533,7 @@ export async function startWebDashboard(options = {}) {
 		kind: providerKind,
 		model: options.model ?? process.env.MODEL_WORKLOG_DEMO_MODEL ?? (providerKind === 'codex' ? 'gpt-5.6-terra' : providerKind === 'openai-compatible' ? process.env.MODEL_WORKLOG_DEMO_OPENAI_MODEL ?? 'gpt-4.1-mini' : undefined),
 	};
-	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'codex' ? new CodexLogAnswerGenerator({ model: provider.model }) : provider.kind === 'copilot'
+	const logAnswerGenerator = options.logAnswerGenerator ?? (provider.kind === 'codex' ? new CodexLogAnswerGenerator({ model: options.answerModel ?? process.env.MODEL_WORKLOG_DEMO_ANSWER_MODEL ?? 'gpt-5.6-luna' }) : provider.kind === 'copilot'
 		? new CopilotLogAnswerGenerator({ model: provider.model })
 		: provider.kind === 'openai-compatible' && provider.endpoint !== undefined ? new OpenAiLogAnswerGenerator({ endpoint: provider.endpoint, model: provider.model, apiKey: provider.apiKey }) : undefined);
 	const sampleWorkspacePath = await realpath(fileURLToPath(new URL('./sample-workspace', import.meta.url)));
@@ -577,7 +578,7 @@ export async function startWebDashboard(options = {}) {
 	let { workspacePath, collector, writer, reader, rag, queryLogs } = workspace;
 	let switching = false;
 	let workspaceSwitch;
-	const config = () => publicConfig(provider, logAnswerGenerator !== undefined, rag !== undefined, workspace.publicWorkspace);
+	const config = () => publicConfig(provider, logAnswerGenerator !== undefined, rag !== undefined, workspace.publicWorkspace, logAnswerGenerator?.model);
 	const runs = new Map();
 	const activeQueries = new Set();
 	let activeSample;

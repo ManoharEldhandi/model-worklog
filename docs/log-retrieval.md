@@ -28,7 +28,8 @@ npm run build
 npm run demo:web
 ```
 
-The default workspace agent is Codex with `gpt-5.6-terra`, authenticated with
+The default workspace agent is Codex with `gpt-5.6-terra` at low reasoning effort;
+log answers use `gpt-5.6-luna`. Both use the existing CLI account, authenticated with
 `codex login`. Model calls use that account. Copy `.env.example` to `.env` and
 set `MODEL_WORKLOG_DEMO_WORKSPACE` to choose a local default without committing
 a personal path. Workspace configuration exposes the folder name rather than
@@ -253,3 +254,16 @@ redacted retrieved evidence. Its JSON answer and citations are validated before
 display; failures fall back to local evidence. This requires a recent Codex CLI
 with `--ignore-user-config` support. Workspace tasks run separately with the
 normal Codex workspace sandbox.
+
+Exact tool-count questions use collector aggregates directly and skip embeddings
+and model startup. Other questions retain Chroma/BM25/RRF and local reranking.
+Changed log chunks are embedded in batches across spans; unchanged revisions
+reuse their index. Local inference uses two CPU threads by default. These changes
+retain the same embedding and reranking models; the answer-model override is
+`MODEL_WORKLOG_DEMO_ANSWER_MODEL`.
+
+Codex capture accepts the current cumulative `tokenUsage.total` counters and the
+legacy usage format. Repeated cumulative updates do not double-count tokens.
+Missing usage remains unknown. Whitespace fragments join their completed message;
+adapter diagnostics stay separate. Long message fields start collapsed and can
+be expanded. Old captures with missing token reports cannot be reconstructed.

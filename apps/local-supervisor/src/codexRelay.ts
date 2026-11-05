@@ -3,7 +3,7 @@ import { basename, relative } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 
 import { CodexAppServerAdapter, resolveAgentCli, spawnAgentCli } from 'model-worklog-sdk';
-import { normalizeOpenAIUsage } from 'model-worklog-sdk';
+import { normalizeCodexUsage } from 'model-worklog-sdk';
 import type { JsonObject, SessionState, TokenUsage } from 'model-worklog-schema';
 
 import type { EventDraft } from './ledger';
@@ -17,6 +17,7 @@ export interface CodexRelayOptions {
 	readonly workspacePath: string;
 	readonly task: string;
 	readonly model?: string;
+	readonly effort?: 'low' | 'medium' | 'high';
 	readonly maxDurationMs: number;
 	readonly maxTokens?: number;
 }
@@ -157,6 +158,7 @@ export class CodexAppServerRelay {
 	private timeout: ReturnType<typeof setTimeout> | undefined;
 	private interruptTimeout: ReturnType<typeof setTimeout> | undefined;
 	private lastUsage: TokenSnapshot | undefined;
+	private model: string | undefined;
 	private terminal = false;
 	private interruptRequested = false;
 	private eventTail: Promise<void> = Promise.resolve();
@@ -218,6 +220,7 @@ export class CodexAppServerRelay {
 				...(this.options.model === undefined ? {} : { model: this.options.model }),
 			}));
 			const thread = asRecord(started?.thread);
+			this.model = this.options.model ?? stringValue(started?.model) ?? stringValue(thread?.model);
 			this.threadId = stringValue(thread?.id);
 			if (this.threadId === undefined) {
 				throw new Error('Codex App Server did not return a thread ID.');
@@ -230,6 +233,7 @@ export class CodexAppServerRelay {
 			}
 			const startedTurn = asRecord(await this.request('turn/start', {
 				threadId: this.threadId,
+				...(this.options.effort === undefined ? {} : { effort: this.options.effort }),
 				input: [{ type: 'text', text: this.options.task }],
 				cwd: this.options.workspacePath,
 				approvalPolicy: 'never',
@@ -333,10 +337,9 @@ export class CodexAppServerRelay {
 	}
 
 	private async handleUsage(params: Record<string, unknown>): Promise<void> {
-		const normalized = normalizeOpenAIUsage({
+		const normalized = normalizeCodexUsage({
 			...params,
-			usage: params.usage,
-			...(this.options.model === undefined ? {} : { model: this.options.model }),
+			...(this.model === undefined ? {} : { model: this.model }),
 		});
 		if (!normalized.ok) {
 			await this.sink.append({ kind: 'usage.unavailable', actor: 'codex-app-server', evidenceGrade: 'unknown', unknownReason: normalized.reason, payload: { adapter: 'codex-app-server', message: normalized.message } });
@@ -344,11 +347,13 @@ export class CodexAppServerRelay {
 		}
 		const current = tokenSnapshot(normalized.usage);
 		const delta = usageDelta(normalized.usage, this.lastUsage);
-		this.lastUsage = current;
 		if (delta === undefined) {
 			await this.sink.append({ kind: 'usage.unavailable', actor: 'codex-app-server', evidenceGrade: 'unknown', unknownReason: 'ambiguous', payload: { adapter: 'codex-app-server', message: 'Codex reported token counters that decreased, so cumulative usage could not be safely aggregated.' } });
 			return;
 		}
+		const repeated = this.lastUsage !== undefined && Object.values(tokenSnapshot(delta)).every((count) => count === 0);
+		this.lastUsage = current;
+		if (repeated) { return; }
 		await this.sink.recordUsage(delta, 'observed-native');
 		if (this.options.maxTokens !== undefined && current.totalTokens > this.options.maxTokens) {
 			await this.sink.append({ kind: 'adapter.lifecycle', actor: 'supervisor', evidenceGrade: 'computed', payload: { adapter: 'codex-app-server', phase: 'usage-budget-exceeded', maxTokens: this.options.maxTokens, reportedTokens: current.totalTokens } });

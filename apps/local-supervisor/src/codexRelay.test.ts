@@ -94,6 +94,30 @@ test('prefers the Codex executable already present on PATH', () => {
 	assert.equal(command, '/custom/bin/codex');
 });
 
+test('current cumulative token updates are recorded as deltas, with duplicates ignored and resets rejected', async () => {
+	const child = new FakeCodexChild(); const sink = new RecordingSink();
+	child.stdin.on('data', (chunk: Buffer) => {
+		for (const line of chunk.toString().trim().split('\n')) {
+			const request = JSON.parse(line) as { method: string; id: number };
+			if (request.method === 'initialize') { child.send({ id: request.id, result: {} }); }
+			if (request.method === 'thread/start') { child.send({ id: request.id, result: { thread: { id: 'thread', model: 'gpt-5.6-terra' } } }); }
+			if (request.method === 'turn/start') { child.send({ id: request.id, result: { turn: { id: 'turn' } } }); }
+		}
+	});
+	const running = new CodexAppServerRelay(sink, { sessionId: 'test', workspacePath: '/workspace', task: 'Inspect code.', maxDurationMs: 10000 }, { spawnCodex: () => child });
+	await running.start();
+	for (const inputTokens of [100, 100, 120, 90, 125]) {
+		child.send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread', turnId: 'turn', tokenUsage: { total: { inputTokens, cachedInputTokens: 50, cacheWriteInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 5, totalTokens: inputTokens + 20 }, last: { totalTokens: 7 } } } });
+	}
+	child.send({ method: 'turn/completed', params: { turn: { status: 'completed' } } });
+	await eventually(() => assert.deepEqual(sink.states, ['completed']));
+	assert.equal(sink.usage.length, 3);
+	const reports = sink.usage as { totalTokens: number; model: string }[];
+	assert.equal(reports.reduce((total, report) => total + report.totalTokens, 0), 145);
+	assert.ok(reports.every((report) => report.model === 'gpt-5.6-terra'));
+	assert.ok(sink.events.some((event) => event.kind === 'usage.unavailable' && event.unknownReason === 'ambiguous'));
+});
+
 test('runs a Codex App Server turn, retains visible evidence, and stops on a usage budget', async () => {
 	const child = new FakeCodexChild();
 	const sink = new RecordingSink();

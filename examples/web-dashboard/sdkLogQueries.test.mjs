@@ -42,3 +42,10 @@ test('stopping a semantic answer cancels even an answer provider that ignores th
 	await started; controller.abort();
 	await assert.rejects(pending, { name: 'AbortError' });
 });
+
+test('exact counts bypass semantic services and model startup without changing their scope', async () => {
+	const counts = { ...base, intent: 'tools', answer: 'read_file was called 12 times. [A1]' };
+	const query = createSdkLogQuery({ client: { async askLogs(request) { assert.equal(request.scope, undefined); return counts; } }, rag: { sync() { throw new Error('Counts must not index'); } }, generator: { generate() { throw new Error('Counts must not call a model'); } } });
+	const answer = await query(LogQueryRequestSchema.parse({ projectId: 'web-demo', question: 'How many times was read_file used?', synthesis: 'model' }));
+	assert.equal(answer.answer, counts.answer); assert.deepEqual(answer.scope, counts.scope);
+});

@@ -172,7 +172,7 @@ export function createLogConversation({ getTraceId }) {
 		const sources = sourceDetails(answer, `turn-${++sequence}`);
 		turn.body.replaceChildren(markdownContent(answer.answer, sources.citations));
 		const retrieval = answer.retrieval.semantic ? answer.retrieval.semantic.degraded ? 'Keyword search fallback' : 'Semantic log search' : answer.retrieval.contextExpanded ? 'Contextual retrieval' : 'Captured logs';
-		turn.assistant.append(node('p', 'answer-provenance', `${retrieval} · ${answer.evidence.length} source passages`), sources.details);
+		turn.assistant.append(node('p', 'answer-provenance', `${retrieval}${answer.generation.model ? ` · ${answer.generation.model}` : ''} · ${answer.evidence.length} source passages`), sources.details);
 		status.textContent = answer.generation.status === 'generated' ? 'Answered from captured logs' : answer.generation.status === 'fallback' ? 'AI unavailable; evidence fallback' : 'Evidence-only answer';
 		exportButton.disabled = false;
 	}
@@ -229,7 +229,7 @@ export function createLogConversation({ getTraceId }) {
 		configure(config) {
 			modelLabel = config.mode === 'codex' ? 'Codex' : config.mode === 'copilot' ? 'Copilot' : 'Assistant';
 			document.querySelector('#query-model-control').hidden = !config.modelSynthesis;
-			document.querySelector('#query-model-label').textContent = config.mode === 'codex' ? 'Codex answers' : config.mode === 'copilot' ? 'Copilot answers' : 'Model answers';
+			document.querySelector('#query-model-label').textContent = config.mode === 'codex' ? `Codex answers${config.answerModel ? ` (${config.answerModel})` : ''}` : config.mode === 'copilot' ? 'Copilot answers' : 'Model answers';
 			model.checked = config.modelSynthesis && ['codex', 'copilot'].includes(config.mode);
 		},
 	};

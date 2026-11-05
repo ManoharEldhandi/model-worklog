@@ -292,6 +292,14 @@ function traceEntry(stored: StoredTraceSpan): ActivityEntry {
 	const titles: Record<string, string> = { agent: 'Agent', model: 'Model call', retrieval: 'Retrieve context', embedding: 'Create embeddings',
 		rerank: 'Rerank results', memory: 'Memory', workflow: 'Workflow', custom: 'Operation' };
 	const details: TimelineDetail[] = [];
+	const projectedMessage = attributes['source.projection'] === 'captured-session-activity'
+		&& attributes['source.kind'] === 'agent.message' && Array.isArray(attributes.content);
+	if (projectedMessage && Array.isArray(attributes.content)) {
+		for (const item of attributes.content) {
+			const field = object(item);
+			if (typeof field?.label === 'string' && typeof field.text === 'string') { details.push({ label: field.label, value: field.text }); }
+		}
+	}
 	for (const [key, label] of [['input', 'Input'], ['output', 'Output'], ['error.type', 'Error']] as const) {
 		const value = attributes[key];
 		if (value !== undefined) { details.push({ label, value: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }); }
@@ -306,8 +314,8 @@ function traceEntry(stored: StoredTraceSpan): ActivityEntry {
 		details.push({ label: redactSensitiveText(event.name), value: `${event.at}${Object.keys(eventAttributes).length === 0 ? '' : `\n${JSON.stringify(eventAttributes, null, 2)}`}` });
 	}
 	const entry: ActivityEntry = {
-		schemaVersion: 1, id: `${span.projectId}/${span.traceId}/${span.spanId}`, category: resources.length > 0 ? 'files' : span.kind,
-		title: resources.length > 0 && action !== 'read'
+		schemaVersion: 1, id: `${span.projectId}/${span.traceId}/${span.spanId}`, category: projectedMessage ? attributes['message.role'] === 'user' ? 'request' : 'response' : resources.length > 0 ? 'files' : span.kind,
+		title: projectedMessage ? string(attributes['activity.title']) ?? 'Agent message' : resources.length > 0 && action !== 'read'
 			? `${action === 'created' ? 'Created' : action === 'modified' ? 'Modified' : action === 'deleted' ? 'Deleted' : 'Changed'} file: ${path}`
 			: `${titles[span.kind] ?? 'Tool'}: ${span.kind === 'model' && (provider !== undefined || model !== undefined) ? [provider, model].filter(Boolean).join(' / ') : name}`,
 		startedAt: span.startedAt, ...(span.endedAt === undefined ? {} : { endedAt: span.endedAt }),

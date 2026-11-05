@@ -110,7 +110,7 @@ function appendFields(container, entry) {
 	for (const detail of entry.details) {
 		const field = element('details', 'activity-field');
 		field.append(element('summary', undefined, detail.label), element('pre', undefined, detail.value));
-		if (['Message', 'Summary', 'Error', 'Output'].includes(detail.label)) { field.open = true; }
+		if (['Message', 'Summary', 'Error', 'Output'].includes(detail.label) && detail.value.length <= 600) { field.open = true; }
 		container.append(field);
 	}
 	for (const warning of entry.warnings) { container.append(element('p', 'capture-warning', warning)); }

@@ -37,6 +37,9 @@ export function createSdkLogQuery({ client, rag, generator }) {
 	return async (request, cancellation) => {
 		const signal = AbortSignal.any([AbortSignal.timeout(55_000), ...(cancellation ? [cancellation] : [])]); signal.throwIfAborted();
 		const base = await client.askLogs({ ...request, synthesis: 'extractive' }, { signal });
+		// Exact tool totals are already computed over the scoped collector snapshot.
+		// They need neither embedding/reranking nor an additional model request.
+		if (base.intent === 'tools') { return base; }
 		const originals = new Map();
 		await rag.sync({ async load(scope, cancellation) {
 			const snapshot = await source.load(scope, cancellation);

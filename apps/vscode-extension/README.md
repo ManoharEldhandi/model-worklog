@@ -90,3 +90,8 @@ in the log, separately from executable-discovery errors.
 **Log a Codex Task**, **Log a Copilot CLI Task**, and **Start Interactive Copilot CLI** retain their existing launchers and session UI, including live updates, stop recording, JSON download, and confirmed deletion. Enable retains the existing Copilot CLI personal-hook setup; restart Copilot CLI for future hooked sessions. This is separate from SDK tracing and does not implement additional VS Code chat hooks.
 
 **Disable Model Logger** disconnects this window without stopping active agent work; the legacy personal hook is removed after the last enabled window disconnects. Trace failures are reported separately without discarding saved session data. The trace UI defaults to the existing local operator `auth-token`, with roles fetched from `/v2/identity`; the trace client also supports injected reader credentials. Scoped trace tokens cannot access legacy session endpoints.
+
+Codex token reports support current cumulative counters and the legacy format.
+After updating, restart an older local supervisor and reload VS Code; the extension
+reports **CLI update needed** if the running supervisor lacks this support.
+Whitespace-only stream fragments stay attached to the completed message.

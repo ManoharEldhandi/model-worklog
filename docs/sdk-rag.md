@@ -37,7 +37,9 @@ default workspace; personal paths stay in this ignored file. The dashboard also
 accepts a folder path. The included sample runs in a temporary copy; custom
 folders are used directly. Switching folders clears the current log session.
 
-Workspace chat uses Codex with `gpt-5.6-terra` by default and requires `codex login`.
+Workspace chat uses Codex `gpt-5.6-terra` at low effort; log answers default to
+`gpt-5.6-luna`. Set `MODEL_WORKLOG_DEMO_ANSWER_MODEL` to override the answer model.
+Both require the existing CLI login (`codex login`).
 Ask it to inspect the code and run tests, then fix the sample's negative quantity
 bug. In **Ask logs**, ask about the observed failure, changed files or test
 results. Answers use retrieved logs and citations. Select **All retained traces**

@@ -41,6 +41,40 @@ async function ask(page, question) {
 	return page.locator('.log-turn').last();
 }
 
+test('completed long agent messages and reported tokens are visible, collapsed and expandable', async ({ page }) => {
+	const reply = 'A complete agent explanation with useful details. '.repeat(30);
+	const dashboard = await startWebDashboard({ provider: 'codex', codexRelayFactory: (sink, options, onFinished) => ({
+		async start() {
+			await sink.append({ kind: 'agent.message', actor: 'codex', evidenceGrade: 'observed-native', correlationId: 'reply', payload: { role: 'assistant', text: reply, final: true } });
+			await sink.recordUsage({ source: 'provider-reported', provider: 'openai', model: 'gpt-5.6-terra', inputTokens: 100, outputTokens: 30, totalTokens: 130, reasoningTokens: 10, cacheReadTokens: 40 }, 'observed-native');
+			await sink.complete('completed'); onFinished(options.sessionId);
+		}, async cancel() {}, async shutdown() {},
+	}) });
+	try {
+		await page.goto(dashboard.url);
+		await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Explain the code.');
+		await page.getByRole('button', { name: 'Send request', exact: true }).click();
+		await expect(page.locator('#run-state')).toHaveText('completed');
+		await expect(page.locator('#timeline')).not.toContainText('interrupted');
+		const message = page.locator('.activity-entry[data-category="response"] .activity-record').first();
+		await expect(message).not.toHaveAttribute('open', '');
+		await message.locator(':scope > summary').click();
+		const field = message.locator('.activity-field').filter({ has: page.getByText('Message', { exact: true }) }).first();
+		await expect(field).not.toHaveAttribute('open', '');
+		await field.locator('summary').click();
+		await expect(field.locator('pre')).toHaveText(reply.trim());
+		await expect(page.locator('#timeline')).toContainText('130');
+		await page.getByRole('radio', { name: 'SDK spans', exact: true }).check();
+		const projected = page.locator('.activity-entry[data-category="response"] .activity-record').first();
+		await expect(projected).not.toHaveAttribute('open', '');
+		await projected.locator(':scope > summary').click();
+		const body = projected.locator('.activity-field').filter({ has: page.getByText('Message', { exact: true }) }).first();
+		await expect(body).not.toHaveAttribute('open', '');
+		await body.locator('summary').click();
+		await expect(body.locator('pre')).toHaveText(reply.trim());
+	} finally { await dashboard.close(); }
+});
+
 test('selecting a project folder clears the previous log conversation and keeps the entered path off the page', async ({ page, dashboard }) => {
 	const folder = await mkdtemp(join(tmpdir(), 'logger-browser-project-'));
 	await writeFile(join(folder, 'README.md'), 'A separate example project.');

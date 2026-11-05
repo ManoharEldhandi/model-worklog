@@ -40,7 +40,7 @@ test('Codex chat works in the sample copy, captures commands, and carries prior 
 	const dashboard = await startWebDashboard({ provider: 'codex', codexRelayFactory: (sink, options, onFinished) => ({
 		async start() {
 			tasks.push(options.task); directories.push(options.workspacePath);
-			assert.equal(options.model, 'gpt-5.6-terra');
+			assert.equal(options.model, 'gpt-5.6-terra'); assert.equal(options.effort, 'low');
 			assert.match(await readFile(join(options.workspacePath, 'src/pricing.ts'), 'utf8'), /quotedPrice/);
 			const base = { actor: 'codex-app-server', evidenceGrade: 'observed-native', correlationId: 'test-command' };
 			await sink.append({ ...base, kind: 'command.started', payload: { executable: 'npm test' } });

@@ -1,9 +1,10 @@
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 
-import { isJsonValue, redactSensitiveText, type EventKind, type JsonObject, type JsonValue, type UnknownReason } from 'model-worklog-schema';
+import { isJsonValue, redactSensitiveText, type EventKind, type JsonObject, type JsonValue, type TokenUsage, type UnknownReason } from 'model-worklog-schema';
 
 import type { TokenUsageMapping, UsageProviderSelector } from './usage';
+import { normalizeCodexUsage } from './codexUsage';
 
 export interface AdapterEventSink {
 	emitEvent(kind: EventKind, payload: JsonObject, correlationId?: string): Promise<unknown>;
@@ -287,6 +288,7 @@ export class CopilotCliInteractiveAdapter extends CopilotCliHookAdapter {
 /** Maps documented Codex App Server notifications into one Model Worklog session. */
 export class CodexAppServerAdapter {
 	private readonly suppressedRawReasoningItems = new Set<string>();
+	private lastUsage: TokenUsage | undefined;
 
 	constructor(
 		private readonly session: AdapterEventSink,
@@ -316,16 +318,16 @@ export class CodexAppServerAdapter {
 		}
 
 		if (method === 'item/agentMessage/delta') {
-			const text = optionalString(params.delta);
+			const text = typeof params.delta === 'string' ? params.delta : undefined;
 			if (text === undefined) {
-				await this.session.unknown('agent.message', 'not-observed', { adapter: 'codex-app-server', method, message: 'Message delta did not include text.' });
+				await this.session.unknown('adapter.lifecycle', 'not-observed', { adapter: 'codex-app-server', method, message: 'Message delta did not include text.' });
 				return { emitted: 1, completed: false };
 			}
 			await record('agent.message', { role: 'assistant', text, source: 'assistant-commentary', delta: true }, optionalString(params.itemId) ?? correlationId);
 			return { emitted, completed: false };
 		}
 		if (method === 'item/plan/delta' || method === 'item/reasoning/summaryTextDelta') {
-			const summary = optionalString(params.delta);
+			const summary = typeof params.delta === 'string' ? params.delta : undefined;
 			if (summary === undefined) {
 				await this.session.unknown('agent.summary', 'not-observed', { adapter: 'codex-app-server', method, message: 'Visible summary delta did not include text.' });
 				return { emitted: 1, completed: false };
@@ -368,7 +370,22 @@ export class CodexAppServerAdapter {
 			return { emitted, completed: false };
 		}
 		if (method === 'thread/tokenUsage/updated') {
-			await this.session.reportProviderUsage('openai', { ...params, usage: params.usage });
+			const normalized = normalizeCodexUsage(params);
+			if (!normalized.ok) { await this.session.unknown('usage.unavailable', normalized.reason, { message: normalized.message }); return { emitted: 1, completed: false }; }
+			const current = normalized.usage;
+			const fields = ['inputTokens', 'outputTokens', 'totalTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens'] as const;
+			if (this.lastUsage !== undefined && fields.some((field) => (current[field] ?? 0) < (this.lastUsage?.[field] ?? 0))) {
+				await this.session.unknown('usage.unavailable', 'ambiguous', { message: 'Codex cumulative counters decreased.' }); return { emitted: 1, completed: false };
+			}
+			const delta = Object.fromEntries(fields.map((field) => [field, current[field] === undefined ? undefined : current[field]! - (this.lastUsage?.[field] ?? 0)])) as Partial<Record<typeof fields[number], number>>;
+			const repeated = this.lastUsage !== undefined && fields.every((field) => (delta[field] ?? 0) === 0);
+			this.lastUsage = current;
+			if (repeated) { return { emitted: 0, completed: false }; }
+			await this.session.reportProviderUsage('openai', { ...params, model: current.model, usage: {
+				input_tokens: delta.inputTokens, output_tokens: delta.outputTokens, total_tokens: delta.totalTokens,
+				...(delta.cacheReadTokens === undefined && delta.cacheWriteTokens === undefined ? {} : { input_tokens_details: { cached_tokens: delta.cacheReadTokens, cache_write_tokens: delta.cacheWriteTokens } }),
+				...(delta.reasoningTokens === undefined ? {} : { output_tokens_details: { reasoning_tokens: delta.reasoningTokens } }),
+			} });
 			return { emitted: 1, completed: false };
 		}
 		if (method === 'thread/closed') {

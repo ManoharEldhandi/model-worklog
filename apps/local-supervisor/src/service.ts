@@ -84,6 +84,7 @@ interface CodexSessionBody {
 	readonly workspacePath: string;
 	readonly task: string;
 	readonly model?: string;
+	readonly effort?: 'low' | 'medium' | 'high';
 	readonly maxDurationMs: number;
 	readonly maxTokens: number;
 }
@@ -1212,12 +1213,14 @@ export class SupervisorService {
 		const workspacePath = requiredString(value, 'workspacePath');
 		const task = requiredString(value, 'task');
 		const model = optionalString(value, 'model');
+		const effort = value.effort;
+		if (effort !== undefined && effort !== 'low' && effort !== 'medium' && effort !== 'high') { throw new Error('Invalid Codex reasoning effort'); }
 		if (workspacePath === undefined || task === undefined || task.length > 32_000 || (value.model !== undefined && model === undefined)) {
 			throw new Error('Codex session requires workspacePath, a task up to 32000 characters, and an optional model');
 		}
 		const maxDurationMs = optionalBoundedInteger(value, 'maxDurationMs', DEFAULT_CODEX_DURATION_MS, 1_000, MAX_CODEX_DURATION_MS);
 		const maxTokens = optionalBoundedInteger(value, 'maxTokens', DEFAULT_CODEX_TOKEN_BUDGET, 1, MAX_CODEX_TOKEN_BUDGET);
-		return { workspacePath, task, ...(model === undefined ? {} : { model }), maxDurationMs, maxTokens };
+		return { workspacePath, task, ...(model === undefined ? {} : { model }), maxDurationMs, maxTokens, ...(effort === undefined ? {} : { effort }) };
 	}
 
 	private parseCopilotSessionBody(body: unknown): CopilotSessionBody {
