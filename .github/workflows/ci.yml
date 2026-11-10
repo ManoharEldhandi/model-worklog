@@ -23,7 +23,7 @@ jobs:
           python-version: '3.13'
           cache: pip
           cache-dependency-path: examples/rag/requirements.txt
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/model-worklog/models
           key: rag-models-v1-${{ runner.os }}-${{ hashFiles('examples/rag/requirements.txt', 'examples/rag/local_embeddings.py') }}
